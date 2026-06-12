@@ -1,0 +1,4 @@
+venv/
+timelapse/
+config.json
+__pycache__/
