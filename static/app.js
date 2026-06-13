@@ -194,6 +194,39 @@ document.getElementById('scrub').addEventListener('input',ev=>{
   stopPlay();fidx=+ev.target.value;showFrame();
 });
 
+// ---------------- auth / read-only ----------------
+let canEdit=true, authEnabled=false;
+function applyAuth(j){
+  authEnabled = !!j.auth_enabled;
+  canEdit = (!authEnabled) || !!j.authed;
+  document.body.classList.toggle('readonly', authEnabled && !canEdit);
+  const box=document.getElementById('authbox');
+  box.style.display = authEnabled ? 'flex' : 'none';
+  document.getElementById('pw').style.display       = (authEnabled && !canEdit)?'':'none';
+  document.getElementById('loginbtn').style.display = (authEnabled && !canEdit)?'':'none';
+  document.getElementById('rolabel').style.display  = (authEnabled && !canEdit)?'':'none';
+  document.getElementById('logoutbtn').style.display= (authEnabled && canEdit)?'':'none';
+}
+async function doLogin(){
+  const pw=document.getElementById('pw');
+  const err=document.getElementById('loginerr');err.textContent='';
+  try{
+    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({password:pw.value})});
+    if(r.ok){pw.value='';refresh();}
+    else err.textContent='wrong password';
+  }catch(e){err.textContent='login failed';}
+}
+async function doLogout(){
+  try{await fetch('/api/logout',{method:'POST'});}catch(e){}
+  refresh();
+}
+function initAuth(){
+  document.getElementById('loginbtn').addEventListener('click',doLogin);
+  document.getElementById('logoutbtn').addEventListener('click',doLogout);
+  document.getElementById('pw').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
+}
+
 // ---------------- sensors: readout, chart, overlay ----------------
 let sensorData={}, sensorStub=false;
 let chartSensor=null, chartHours=168;
@@ -350,7 +383,7 @@ function drawGrid(){
     if(nm)h+=`<text x="${(ctr[0]*S).toFixed(1)}" y="${(ctr[1]*S+19).toFixed(1)}" class="gnm" text-anchor="middle">${esc(nm)}</text>`;
     if(mo)h+=`<text x="${(ctr[0]*S).toFixed(1)}" y="${(ctr[1]*S+(nm?40:19)).toFixed(1)}" class="gmoist" text-anchor="middle">${mo.value.toFixed(0)}%</text>`;
   }
-  for(let i=0;i<4;i++)
+  if(canEdit)for(let i=0;i<4;i++)
     h+=`<circle class="gh" data-i="${i}" cx="${(C[i][0]*S).toFixed(1)}" cy="${(C[i][1]*S).toFixed(1)}" r="16"/>`;
   svg.innerHTML=h;
 }
@@ -382,6 +415,7 @@ function syncGridControls(){
 function initGridSvg(){
   const svg=document.getElementById('gridsvg');
   svg.addEventListener('pointerdown',e=>{
+    if(!canEdit)return;
     if(e.target.classList.contains('gh')){
       gdrag=+e.target.dataset.i;svg.setPointerCapture(e.pointerId);e.preventDefault();}
   });
@@ -389,6 +423,7 @@ function initGridSvg(){
     if(gdrag<0||!grid)return;grid.corners[gdrag]=ptFrac(svg,e);drawGrid();});
   svg.addEventListener('pointerup',()=>{if(gdrag>=0){gdrag=-1;saveGrid();}});
   svg.addEventListener('click',e=>{
+    if(!canEdit)return;
     if(!e.target.classList.contains('gc'))return;
     const k=e.target.dataset.k,cur=grid.names[k]||'';
     const v=prompt('Name for cell '+k+':',cur);
@@ -421,6 +456,7 @@ async function refresh(){
     renderPhoto(j);
     renderVideoState(j);
     loadFrames();
+    applyAuth(j);
     handleGrid(j);
     renderSensors(j);
     renderWater(j);
@@ -454,6 +490,7 @@ setInterval(()=>{const d=new Date();
   if(S){S.now=d;}},1000);
 setInterval(refresh,15000);
 setInterval(render,60000);
+initAuth();
 initGridSvg();
 initSensors();
 refresh();

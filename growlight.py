@@ -16,20 +16,23 @@ Requires (handled by setup.sh):
 """
 
 import json
+import secrets
 import subprocess
 import sys
 import signal
 import threading
 import time
 from datetime import datetime, timedelta
+from functools import wraps
 from pathlib import Path
 from zoneinfo import ZoneInfo, available_timezones
 
 from rpi_hardware_pwm import HardwarePWM
 from astral import LocationInfo
 from astral.sun import sun
-from flask import (Flask, jsonify, render_template, request,
+from flask import (Flask, jsonify, render_template, request, session,
                    send_file, send_from_directory)
+from werkzeug.security import check_password_hash
 
 import db
 import sensors
@@ -50,6 +53,8 @@ DEFAULTS = {
     "roi": "",                  # crop as "x,y,w,h" fractions, blank = full frame
     "sample_interval_min": 5,   # how often to read + log sensors
     "ntfy_topic": "",           # set to enable push notifications (see notify.py)
+    "password_hash": "",        # set to enable login (see README); blank = open
+    "cookie_secure": True,      # True for HTTPS; set False only for local http testing
     "auto_water": False,        # master switch; keep OFF until moisture calibrated
     "moisture_threshold_pct": 30,  # CALIBRATION TODO: "dry" trigger, per-probe
     "pump_max_seconds": 20,     # hard cap on a single dose (anti-flood/dry-run)
@@ -421,6 +426,70 @@ def start_render():
 
 app = Flask(__name__)
 
+SECRET_PATH = Path(__file__).with_name(".secret")
+def _load_secret():
+    try:
+        s = SECRET_PATH.read_text().strip()
+        if s:
+            return s
+    except Exception:
+        pass
+    s = secrets.token_hex(32)
+    try:
+        SECRET_PATH.write_text(s)
+        SECRET_PATH.chmod(0o600)
+    except Exception:
+        pass
+    return s
+
+app.secret_key = _load_secret()
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=bool(settings.get("cookie_secure", True)),
+    PERMANENT_SESSION_LIFETIME=timedelta(days=30),
+)
+
+
+def auth_enabled():
+    with settings_lock:
+        return bool(settings.get("password_hash"))
+
+
+def is_authed():
+    # If no password is configured, the dashboard is open (legacy behaviour).
+    return (not auth_enabled()) or bool(session.get("authed"))
+
+
+def require_auth(fn):
+    @wraps(fn)
+    def wrapper(*a, **k):
+        if not is_authed():
+            return jsonify(error="login required"), 401
+        return fn(*a, **k)
+    return wrapper
+
+
+@app.route("/api/login", methods=["POST"])
+def login():
+    with settings_lock:
+        h = settings.get("password_hash", "")
+    if not h:
+        return jsonify(ok=True, authed=True)  # no password set -> open
+    pw = (request.get_json(silent=True) or {}).get("password", "")
+    time.sleep(0.5)  # crude throttle against rapid guessing
+    if check_password_hash(h, pw):
+        session["authed"] = True
+        session.permanent = True
+        return jsonify(ok=True, authed=True)
+    return jsonify(ok=False, error="wrong password"), 401
+
+
+@app.route("/api/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return jsonify(ok=True, authed=False)
+
 
 @app.route("/")
 def index():
@@ -450,6 +519,7 @@ def thumb(name):
 
 
 @app.route("/api/grid", methods=["POST"])
+@require_auth
 def update_grid():
     data = request.get_json(silent=True) or {}
     try:
@@ -476,6 +546,7 @@ def update_grid():
 
 
 @app.route("/api/detect_grid", methods=["POST"])
+@require_auth
 def detect_grid():
     count, latest, _ = photo_inventory()
     if not count or latest is None:
@@ -494,6 +565,7 @@ def detect_grid():
 
 
 @app.route("/api/render", methods=["POST"])
+@require_auth
 def api_render():
     count, _, _ = photo_inventory()
     if count < 2:
@@ -537,6 +609,8 @@ def status():
         sensors={k: {"ts": ts, "value": v}
                  for k, (ts, v) in db.latest().items()},
         sensor_stub=sensors.stub_mode(),
+        authed=is_authed(),
+        auth_enabled=auth_enabled(),
         water={
             "float": sensors.read_float(),
             "pump_hw": PUMP_HW,
@@ -549,6 +623,7 @@ def status():
 
 
 @app.route("/api/pump", methods=["POST"])
+@require_auth
 def pump_test():
     if not PUMP_HW:
         return jsonify(ok=False, error="pump hardware not available"), 200
@@ -576,6 +651,7 @@ def series():
 
 
 @app.route("/api/settings", methods=["POST"])
+@require_auth
 def update_settings():
     data = request.get_json(silent=True) or {}
     new = {}

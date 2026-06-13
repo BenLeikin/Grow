@@ -9,7 +9,16 @@
 <body>
 <header>
   <h1>&#127793; Seedling Light</h1>
-  <div id="clock">--:--:--</div>
+  <div class="hright">
+    <span id="authbox" style="display:none">
+      <span id="rolabel" class="robadge" style="display:none">read-only</span>
+      <input type="password" id="pw" placeholder="password" autocomplete="current-password">
+      <button type="button" id="loginbtn">Log in</button>
+      <button type="button" id="logoutbtn" style="display:none">Log out</button>
+      <span id="loginerr"></span>
+    </span>
+    <div id="clock">--:--:--</div>
+  </div>
 </header>
 <div class="vine" aria-hidden="true"></div>
 
@@ -45,7 +54,7 @@
     <svg id="gridsvg" viewBox="0 0 1000 1000" preserveAspectRatio="none" style="display:none"></svg>
   </div>
   <div id="photoinfo"></div>
-  <div class="gridctl">
+  <div class="gridctl editonly">
     <label><input type="checkbox" id="gridshow"> Show cell grid</label>
     <button type="button" id="detectbtn">&#128269; Detect</button>
     <span>Rows <input type="number" id="gridrows" min="1" max="12"></span>
@@ -64,7 +73,7 @@
     <span id="pframe"></span>
   </div>
   <div class="pctrl">
-    <button type="button" id="renderbtn">&#127909; Render video</button>
+    <button type="button" id="renderbtn" class="editonly">&#127909; Render video</button>
     <span id="renderinfo" style="font-size:13px;color:var(--leaf)"></span>
     <a id="dlbtn" href="/video" download
        style="display:none;margin-left:auto;font-size:14px;font-weight:600;
@@ -80,7 +89,7 @@
     Demo data &mdash; no sensors wired yet. These values are simulated.
   </div>
   <div class="sreadout" id="sreadout"></div>
-  <div class="waterctl" id="waterctl" style="display:none">
+  <div class="waterctl editonly" id="waterctl" style="display:none">
     <span class="schip">Float <b id="floatstate">--</b></span>
     <span class="schip">Pump today <b id="pumptoday">0</b><span class="u">s</span></span>
     <button type="button" id="pumpbtn">Test pump</button>
@@ -101,7 +110,7 @@
        role="img" aria-label="Sensor history"></svg>
 </div>
 
-<details class="card aset">
+<details class="card aset editonly">
   <summary><h2>&#127807; Settings</h2></summary>
   <form id="cfgform">
     <div class="frow">
