@@ -1,4 +1,8 @@
 venv/
 timelapse/
 config.json
+growlight.db
+growlight.db-wal
+growlight.db-shm
 __pycache__/
+*.pyc

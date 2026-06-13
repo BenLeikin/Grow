@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""SQLite logging layer for the grow dashboard.
+
+One Pi, one writer: SQLite in WAL mode is plenty and needs no daemon.
+
+Schema (long / time-series format so new sensors never require migrations):
+  readings(ts, sensor, value)          raw samples, kept ~30 days
+  readings_hourly(ts, sensor, value)   hourly averages, kept long-term
+  events(ts, type, detail)             discrete happenings
+
+Sensor keys are namespaced strings, e.g. "moisture:B2", "temp:soil_east",
+"humidity", "lux". All timestamps are Unix epoch seconds, UTC.
+
+Usage:
+  import db
+  db.init()                                  # once at startup
+  db.log_many([("moisture:B2", 43.1), ...])  # one transaction per cycle
+  db.log_event("pump", "ran 8s")
+  rows = db.series("moisture:B2", hours=168)  # last 7 days
+  db.downsample_and_prune()                   # daily housekeeping
+"""
+
+import sqlite3
+import time
+from pathlib import Path
+
+DB_PATH = Path(__file__).with_name("growlight.db")
+
+RAW_RETENTION_DAYS = 30   # raw samples older than this are rolled up + deleted
+
+_conn = None
+
+
+def _c():
+    """Module-level connection, opened lazily. check_same_thread=False because
+    Flask serves from multiple threads; WAL keeps readers and the writer happy."""
+    global _conn
+    if _conn is None:
+        _conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=10)
+        _conn.row_factory = sqlite3.Row
+        _conn.execute("PRAGMA journal_mode=WAL")
+        _conn.execute("PRAGMA synchronous=NORMAL")  # safe with WAL, fewer SD flushes
+    return _conn
+
+
+def init():
+    c = _c()
+    c.executescript("""
+        CREATE TABLE IF NOT EXISTS readings (
+            ts     INTEGER NOT NULL,
+            sensor TEXT    NOT NULL,
+            value  REAL    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_readings_sensor_ts
+            ON readings(sensor, ts);
+
+        CREATE TABLE IF NOT EXISTS readings_hourly (
+            ts     INTEGER NOT NULL,   -- start of the hour, UTC
+            sensor TEXT    NOT NULL,
+            value  REAL    NOT NULL,
+            PRIMARY KEY (sensor, ts)
+        );
+
+        CREATE TABLE IF NOT EXISTS events (
+            ts     INTEGER NOT NULL,
+            type   TEXT    NOT NULL,
+            detail TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+    """)
+    c.commit()
+
+
+# ----------------------------- writing -----------------------------
+
+def log_many(pairs, ts=None):
+    """Insert several (sensor, value) readings in one transaction.
+    Skips Nones so a single failed sensor doesn't abort the batch."""
+    ts = int(ts if ts is not None else time.time())
+    rows = [(ts, str(s), float(v)) for s, v in pairs if v is not None]
+    if not rows:
+        return
+    c = _c()
+    with c:  # transaction
+        c.executemany("INSERT INTO readings(ts, sensor, value) VALUES (?,?,?)", rows)
+
+
+def log_reading(sensor, value, ts=None):
+    log_many([(sensor, value)], ts=ts)
+
+
+def log_event(etype, detail="", ts=None):
+    ts = int(ts if ts is not None else time.time())
+    c = _c()
+    with c:
+        c.execute("INSERT INTO events(ts, type, detail) VALUES (?,?,?)",
+                  (ts, str(etype), str(detail)))
+
+
+# ----------------------------- reading -----------------------------
+
+def series(sensor, hours=168):
+    """Return [(ts, value), ...] for a sensor over the last `hours`.
+    Pulls hourly rollups for the old part and raw for the recent part,
+    so a long window stays light."""
+    since = int(time.time()) - hours * 3600
+    c = _c()
+    raw = c.execute(
+        "SELECT ts, value FROM readings WHERE sensor=? AND ts>=? ORDER BY ts",
+        (sensor, since)).fetchall()
+    hourly = c.execute(
+        "SELECT ts, value FROM readings_hourly WHERE sensor=? AND ts>=? ORDER BY ts",
+        (sensor, since)).fetchall()
+    merged = {r["ts"]: r["value"] for r in hourly}
+    merged.update({r["ts"]: r["value"] for r in raw})  # raw wins where overlapping
+    return sorted(merged.items())
+
+
+def latest(sensors=None):
+    """Most recent value per sensor -> {sensor: (ts, value)}."""
+    c = _c()
+    rows = c.execute("""
+        SELECT r.sensor, r.ts, r.value FROM readings r
+        JOIN (SELECT sensor, MAX(ts) ts FROM readings GROUP BY sensor) m
+          ON r.sensor=m.sensor AND r.ts=m.ts
+    """).fetchall()
+    out = {r["sensor"]: (r["ts"], r["value"]) for r in rows}
+    if sensors is not None:
+        out = {k: v for k, v in out.items() if k in sensors}
+    return out
+
+
+def recent_events(limit=50):
+    c = _c()
+    rows = c.execute(
+        "SELECT ts, type, detail FROM events ORDER BY ts DESC LIMIT ?",
+        (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def reading_near(sensor, ts, window=3600):
+    """Value for a sensor closest to time `ts` (for timelapse-frame labels).
+    Returns None if nothing within `window` seconds."""
+    c = _c()
+    row = c.execute("""
+        SELECT value, ABS(ts-?) d FROM readings
+        WHERE sensor=? AND ABS(ts-?)<=? ORDER BY d LIMIT 1
+    """, (ts, sensor, ts, window)).fetchone()
+    return row["value"] if row else None
+
+
+# --------------------------- housekeeping ---------------------------
+
+def downsample_and_prune():
+    """Roll raw readings older than RAW_RETENTION_DAYS into hourly averages,
+    then delete those raw rows. Idempotent; safe to run daily."""
+    cutoff = int(time.time()) - RAW_RETENTION_DAYS * 86400
+    c = _c()
+    with c:
+        c.execute("""
+            INSERT OR REPLACE INTO readings_hourly(ts, sensor, value)
+            SELECT (ts/3600)*3600 AS hr, sensor, AVG(value)
+            FROM readings WHERE ts < ?
+            GROUP BY hr, sensor
+        """, (cutoff,))
+        c.execute("DELETE FROM readings WHERE ts < ?", (cutoff,))
+    c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
+if __name__ == "__main__":
+    # Self-test: log fake data, query it, exercise housekeeping. No hardware needed.
+    import random
+    init()
+    now = int(time.time())
+    print("seeding 3 days of fake data for moisture:B2 ...")
+    for i in range(3 * 24 * 12):                 # every 5 min for 3 days
+        t = now - i * 300
+        log_reading("moisture:B2", 40 + 10 * random.random(), ts=t)
+    log_event("pump", "ran 8s (self-test)")
+    s = series("moisture:B2", hours=72)
+    print(f"series points: {len(s)}  first={s[0]}  last={s[-1]}")
+    print("latest:", latest())
+    print("events:", recent_events(3))
+    print("near now:", reading_near("moisture:B2", now))
+    downsample_and_prune()
+    print("after prune, raw points 72h:", len(series('moisture:B2', hours=72)))
+    print("OK")

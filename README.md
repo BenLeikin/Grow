@@ -1,93 +1,101 @@
 # Growlight
 
+Sun-synced grow light controller, timelapse camera, and web dashboard for a
+Raspberry Pi Zero W. Built to start seedlings; over-engineered with love.
 
+The light follows real local sunrise and sunset (computed on-device with
+`astral`), fading up and down with smooth ramps. A camera photographs the
+tray on a schedule under identical lighting, and a Flask dashboard shows
+the live state, plays the timelapse, renders a downloadable MP4, and lets
+every setting be changed from the browser.
 
-## Getting started
+## Hardware
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+- Raspberry Pi Zero W (any 40-pin Pi works)
+- 5V USB LED grow light head (the stock controller removed)
+- D4184 MOSFET trigger module, low-side switching the LED ground
+- USB-A screw-terminal adapters (one male for the supply brick, one female
+  for the light head) — no cut cables
+- 5V 3A USB brick for the light, separate brick for the Pi
+- Raspberry Pi camera (v1 tested; any rpicam-supported module works)
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+GPIO18 (physical pin 12) drives the MOSFET's TRIG/PWM input at 1 kHz via
+the kernel's hardware PWM. Pin 14 provides the shared ground reference.
+Wiring diagrams are in `docs/` if present.
 
-## Add your files
+## Install
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+Flash Raspberry Pi OS (Bookworm or Trixie), get it on WiFi, then:
 
 ```
-cd existing_repo
-git remote add origin http://gitlab.pilg0re.net/Ben/Growlight.git
-git branch -M main
-git push -uf origin main
+git clone https://gitlab.pilg0re.net/Ben/Growlight.git
+cd Growlight
+bash scripts/setup.sh
+sudo reboot   # only needed the first time, for the PWM overlay
 ```
 
-## Integrate with your tools
+`setup.sh` is idempotent and safe to re-run for upgrades. It installs
+system packages (pigpio-free: PWM comes from a device-tree overlay),
+creates a venv, deploys `growlight.py`, and installs a systemd service
+under the current user. Settings live in `config.json` next to the script
+and survive upgrades. Run standalone (no checkout), setup.sh uses an
+embedded copy of growlight.py instead.
 
-* [Set up project integrations](http://gitlab.pilg0re.net/Ben/Growlight/-/settings/integrations)
+Dashboard: `http://<pi-ip>:5000`
 
-## Collaborate with your team
+## Layout
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+```
+growlight/
+  growlight.py        app: controller + dashboard + timelapse
+  db.py               app: SQLite logging/query layer (sensor history)
+  detect_corners.py   app: tray-corner detection helper (subprocess)
+  config.json         runtime settings (gitignored; defaults in code)
+  growlight.db        SQLite history (gitignored)
+  timelapse/          captured photos + thumbs + rendered mp4 (gitignored)
+  venv/               virtualenv (gitignored)
+  scripts/
+    setup.sh          idempotent installer / updater
+    test_ramp.py      manual 0->100->0 light test
+```
 
-## Test and Deploy
+The three app files locate everything relative to their own path, so they must
+stay together in the project root. `scripts/setup.sh` deploys them there from the
+repo (or from embedded copies if run standalone).
 
-Use the built-in continuous integration in GitLab.
+## Features
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+- Photoperiod synced to local sunrise/sunset with configurable ramps,
+  brightness cap, and offsets to stretch the day
+- All settings editable live from the dashboard (location, timezone
+  dropdown, ramps, capture options, photo crop) — no SSH needed
+- Timelapse capture during the photoperiod only, with the light forced to
+  a fixed brightness per shot so every frame is identically exposed
+- Sensor-level crop (rpicam ROI) configurable from the page
+- In-browser timelapse player (thumbnail-based, kind to the Zero W) plus
+  on-device MP4 rendering with a download link
+- Greenhouse-green responsive UI: two-column desktop layout, single-column
+  mobile, collapsible settings
 
-***
+## API
 
-# Editing this README
+- `GET /api/status` — full state: brightness, sun times, settings, photos
+- `POST /api/settings` — validated settings update, applied immediately
+- `GET /api/photos` — timelapse frame list
+- `GET /photo/latest`, `GET /thumb/<name>`, `GET /video`
+- `POST /api/render` — background MP4 render
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+## Operational notes
 
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+- Reverse-proxy with nginx + basic auth + TLS before exposing it anywhere
+  public. The app itself has no authentication by design (LAN appliance).
+- Give the Pi a DHCP reservation. Ask me how I know.
+- Manual hardware test: `scripts/test_ramp.py` fades the light 0→100→0 over 30s
+  (stop the service first).
 
 ## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+Soil moisture (10× capacitive via 3× ADS1115), BME280 air temp/humidity,
+BH1750 light verification, DS18B20 soil temperature, and bottom-watering
+via a USB submersible pump with reservoir float-switch protection. The
+box is already too full of bus bars.
