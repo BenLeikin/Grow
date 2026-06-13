@@ -295,9 +295,10 @@ def render_worker():
             ["ffmpeg", "-loglevel", "error", "-y",
              "-framerate", "24", "-pattern_type", "glob",
              "-i", str(TIMELAPSE_DIR / "*.jpg"),
-             # full resolution; ensure even dimensions for libx264
-             "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-             "-c:v", "libx264", "-preset", "ultrafast",
+             # 1920-wide: sharp anywhere, light enough for the Zero W's RAM
+             "-vf", "scale=1920:-2",
+             "-c:v", "libx264", "-preset", "veryfast",
+             "-crf", "23", "-threads", "1",
              "-pix_fmt", "yuv420p",
              "-movflags", "+faststart",   # index at front: streams/previews properly
              str(VIDEO_PATH)],
