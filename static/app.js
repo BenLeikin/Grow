@@ -177,7 +177,13 @@ function renderVideoState(j){
     tickRender();
   } else {
     clearRenderTimer();renderStart=null;
-    if(st.state==='error'){
+    if(!canEdit && st.state!=='running'){
+      // read-only viewer: hide render chatter, keep the video timestamp
+      if(j.video_time){
+        const w=new Date(j.video_time);
+        info.textContent='Video from '+w.toLocaleString();
+      } else info.textContent='';
+    } else if(st.state==='error'){
       info.textContent='Render error'+(st.elapsed?` after ${Math.round(st.elapsed)}s`:'')+
         ': '+st.msg;
     } else if(j.video_time){
