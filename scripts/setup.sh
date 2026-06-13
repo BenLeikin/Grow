@@ -64,7 +64,7 @@ fi
 echo "==> [4/6] Python venv and dependencies"
 [[ -d "$APP_DIR/venv" ]] || python3 -m venv "$APP_DIR/venv"
 "$APP_DIR/venv/bin/pip" install --quiet --upgrade pip
-"$APP_DIR/venv/bin/pip" install --quiet astral rpi-hardware-pwm flask
+"$APP_DIR/venv/bin/pip" install --quiet astral rpi-hardware-pwm flask gpiozero lgpio
 echo "    optional: grid auto-detect (opencv) ..."
 "$APP_DIR/venv/bin/pip" install --quiet opencv-python-headless numpy \
   || echo "    opencv unavailable; grid auto-detect off, manual placement still works"

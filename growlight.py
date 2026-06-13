@@ -50,6 +50,11 @@ DEFAULTS = {
     "roi": "",                  # crop as "x,y,w,h" fractions, blank = full frame
     "sample_interval_min": 5,   # how often to read + log sensors
     "ntfy_topic": "",           # set to enable push notifications (see notify.py)
+    "auto_water": False,        # master switch; keep OFF until moisture calibrated
+    "moisture_threshold_pct": 30,  # CALIBRATION TODO: "dry" trigger, per-probe
+    "pump_max_seconds": 20,     # hard cap on a single dose (anti-flood/dry-run)
+    "pump_cooldown_min": 30,    # min wait between auto doses (soil wicks slowly)
+    "pump_daily_max_seconds": 180,  # runaway backstop
     "grid": {                   # cell-mapping overlay
         "corners": [[0.12, 0.10], [0.88, 0.10], [0.88, 0.92], [0.12, 0.92]],
         "rows": 4, "cols": 4, "names": {}, "show": True,
@@ -68,6 +73,21 @@ THUMB_DIR     = TIMELAPSE_DIR / "thumbs"
 
 TIMELAPSE_DIR.mkdir(exist_ok=True)
 THUMB_DIR.mkdir(exist_ok=True)
+
+# --- pump actuator (gpiozero, guarded so off-Pi / unwired stays safe) ---
+PUMP_PIN = 24  # BCM; physical pin 18
+try:
+    from gpiozero import OutputDevice
+    _pump = OutputDevice(PUMP_PIN, active_high=True, initial_value=False)
+    PUMP_HW = True
+except Exception as _e:
+    _pump = None
+    PUMP_HW = False
+    print(f"pump GPIO unavailable ({_e}); pump control disabled")
+
+pump_state = {"running": False, "last_run": 0.0,
+              "today_seconds": 0.0, "day": "", "last_detail": ""}
+pump_lock = threading.Lock()
 
 settings = dict(DEFAULTS)
 if CONFIG_PATH.exists():
@@ -166,6 +186,68 @@ def photo_inventory():
 
 
 # --------------------------- control loop ---------------------------
+
+def _today_str():
+    return datetime.now(ZoneInfo(settings["timezone"])).date().isoformat()
+
+
+def run_pump(seconds, reason="manual", force=False):
+    """Run the pump for `seconds`, clamped to the hard cap. Safety: refuses if
+    hardware is absent, if already running, or (unless forced) if the daily cap
+    would be exceeded. Blocks for the duration, so call it in a thread.
+    Returns (ok, message). Logs every run as a pump event."""
+    with settings_lock:
+        cap = float(settings.get("pump_max_seconds", 20))
+        daily_cap = float(settings.get("pump_daily_max_seconds", 180))
+    secs = max(0.0, min(float(seconds), cap))
+    with pump_lock:
+        if not PUMP_HW:
+            return False, "pump hardware not available"
+        if pump_state["running"]:
+            return False, "pump already running"
+        if pump_state["day"] != _today_str():
+            pump_state["day"] = _today_str()
+            pump_state["today_seconds"] = 0.0
+        if not force and pump_state["today_seconds"] + secs > daily_cap:
+            return False, "daily pump limit reached"
+        pump_state["running"] = True
+    elapsed = 0.0
+    try:
+        _pump.on()
+        t0 = time.time()
+        time.sleep(secs)
+        elapsed = time.time() - t0
+    finally:
+        _pump.off()
+        with pump_lock:
+            pump_state["running"] = False
+            pump_state["last_run"] = time.time()
+            pump_state["today_seconds"] += elapsed
+            pump_state["last_detail"] = f"{reason} {elapsed:.1f}s"
+    try:
+        db.log_event("pump", f"{reason} {elapsed:.1f}s")
+    except Exception:
+        pass
+    return True, f"ran {elapsed:.1f}s"
+
+
+def watering_loop():
+    """Autonomous watering. DISABLED until auto_water is on AND moisture is
+    calibrated. Scaffold only -- the dry-trigger and fill logic go here once
+    real moisture data tells us what 'dry' means.
+    Planned: if a cell reads below moisture_threshold_pct and cooldown has
+    elapsed and the tray float says 'not full', dose via run_pump(reason="auto"),
+    stopping early when the float trips. If a dose runs to the cap without the
+    float tripping, treat it as source-empty/leak/stuck-float: log it, fire a
+    notify alert, and flip auto_water off."""
+    while True:
+        time.sleep(60)
+        with settings_lock:
+            on = bool(settings.get("auto_water", False))
+        if not on:
+            continue
+        # TODO (post-calibration): real dry detection + float-gated dosing.
+
 
 def sample_loop():
     """Read all sensors on an interval, log them in one transaction, and run
@@ -455,7 +537,30 @@ def status():
         sensors={k: {"ts": ts, "value": v}
                  for k, (ts, v) in db.latest().items()},
         sensor_stub=sensors.stub_mode(),
+        water={
+            "float": sensors.read_float(),
+            "pump_hw": PUMP_HW,
+            "pump_running": pump_state["running"],
+            "pump_last": pump_state["last_detail"],
+            "today_seconds": round(pump_state["today_seconds"], 1),
+            "auto_water": cfg.get("auto_water", False),
+        },
     )
+
+
+@app.route("/api/pump", methods=["POST"])
+def pump_test():
+    if not PUMP_HW:
+        return jsonify(ok=False, error="pump hardware not available"), 200
+    data = request.get_json(silent=True) or {}
+    try:
+        secs = float(data.get("seconds", 3))
+    except (TypeError, ValueError):
+        secs = 3.0
+    force = bool(data.get("force", False))
+    threading.Thread(target=lambda: run_pump(secs, "manual", force),
+                     daemon=True).start()
+    return jsonify(ok=True, started=True)
 
 
 @app.route("/api/series")
@@ -532,5 +637,6 @@ if __name__ == "__main__":
     threading.Thread(target=control_loop, daemon=True).start()
     threading.Thread(target=capture_loop, daemon=True).start()
     threading.Thread(target=sample_loop, daemon=True).start()
+    threading.Thread(target=watering_loop, daemon=True).start()
     print(f"Dashboard at http://0.0.0.0:{HTTP_PORT}")
     app.run(host="0.0.0.0", port=HTTP_PORT, threaded=True)

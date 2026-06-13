@@ -33,6 +33,48 @@ ENABLED = {
     "soil_temp": False,
 }
 
+# --- float switch (destination tray; reports raw switch state) ---
+# Flip FLOAT_ENABLED True once wired. Pin is BCM GPIO23 (physical pin 16),
+# other leg to GND, internal pull-up. read_float() reports the raw contact
+# state so you can verify the mapping by hand, then mount/flip the float so
+# "tray full" lands on the fail-safe (broken-wire) state.
+FLOAT_PIN = 23
+FLOAT_ENABLED = False
+_float_dev = None
+_float_init = False
+
+
+def _float():
+    global _float_dev, _float_init
+    if _float_init:
+        return _float_dev
+    _float_init = True
+    if not FLOAT_ENABLED:
+        return None
+    try:
+        from gpiozero import Button
+        # pull_up=True -> is_pressed is True when the pin is pulled LOW
+        # (switch closed to GND). Open circuit / broken wire -> not pressed.
+        _float_dev = Button(FLOAT_PIN, pull_up=True, bounce_time=0.1)
+    except Exception as e:
+        print(f"float switch unavailable ({e}); reporting unknown")
+        _float_dev = None
+    return _float_dev
+
+
+def read_float():
+    """Raw switch state: 1.0 = closed (pin low), 0.0 = open (pin high or
+    broken wire), None = no sensor. Interpretation (which state means 'full')
+    is decided during mounting; see FLOAT_ENABLED comment."""
+    dev = _float()
+    if dev is None:
+        return None
+    try:
+        return 1.0 if dev.is_pressed else 0.0
+    except Exception:
+        return None
+
+
 # Which ADS board + channel each cell's moisture probe lands on, and that
 # probe's calibration endpoints (raw counts in air vs in water). Filled in
 # during wiring + calibration; until then stub mode ignores this.
@@ -127,10 +169,15 @@ def stub_mode():
 
 def read_all():
     """Return {sensor_key: value}. Each sensor type is read independently and
-    wrapped so one failed device never aborts the rest; failures are dropped."""
-    if stub_mode():
-        return _stub()
+    wrapped so one failed device never aborts the rest; failures are dropped.
+    The float switch is read whether or not the I2C sensors are wired."""
     out = {}
+    fv = read_float()
+    if fv is not None:
+        out["float:tray"] = fv
+    if stub_mode():
+        out.update(_stub())
+        return out
     for fn in (_read_moisture, _read_air, _read_lux, _read_soil_temps):
         try:
             out.update(fn())

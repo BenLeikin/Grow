@@ -80,6 +80,14 @@
     Demo data &mdash; no sensors wired yet. These values are simulated.
   </div>
   <div class="sreadout" id="sreadout"></div>
+  <div class="waterctl" id="waterctl" style="display:none">
+    <span class="schip">Float <b id="floatstate">--</b></span>
+    <span class="schip">Pump today <b id="pumptoday">0</b><span class="u">s</span></span>
+    <button type="button" id="pumpbtn">Test pump</button>
+    <input type="number" id="pumpsecs" value="3" min="1" max="20" aria-label="Pump seconds">
+    <span class="u">s</span>
+    <span id="pumpinfo"></span>
+  </div>
   <div class="chartctl">
     <select id="chartsensor" aria-label="Sensor to chart"></select>
     <span class="ranges" id="ranges">

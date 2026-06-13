@@ -281,7 +281,33 @@ function drawChart(pts){
   h+=`<text x="${W-P}" y="${H-P+18}" text-anchor="end" font-size="12" fill="#7a8a72">${fmtT(x1)}</text>`;
   svg.innerHTML=h;
 }
+function renderWater(j){
+  const w=j.water;const box=document.getElementById('waterctl');
+  if(!w){box.style.display='none';return;}
+  box.style.display='';
+  const fs=document.getElementById('floatstate');
+  fs.textContent = w.float===null ? 'no sensor'
+                 : (w.float>=1 ? 'closed' : 'open');
+  document.getElementById('pumptoday').textContent=w.today_seconds;
+  const btn=document.getElementById('pumpbtn');
+  btn.disabled = !w.pump_hw || w.pump_running;
+  btn.textContent = w.pump_running ? 'Pumping...' : 'Test pump';
+  if(!w.pump_hw)document.getElementById('pumpinfo').textContent='no pump hardware';
+  else if(w.pump_last && !w.pump_running)
+    document.getElementById('pumpinfo').textContent='last: '+w.pump_last;
+}
 function initSensors(){
+  const pb=document.getElementById('pumpbtn');
+  if(pb)pb.addEventListener('click',async()=>{
+    const secs=+document.getElementById('pumpsecs').value||3;
+    document.getElementById('pumpinfo').textContent='starting...';
+    try{
+      const r=await fetch('/api/pump',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({seconds:secs})});
+      const j=await r.json();
+      if(!j.ok)document.getElementById('pumpinfo').textContent=j.error||'failed';
+    }catch(e){document.getElementById('pumpinfo').textContent='request failed';}
+  });
   document.getElementById('chartsensor').addEventListener('change',e=>{
     chartSensor=e.target.value;loadChart();});
   document.querySelectorAll('#ranges button').forEach(b=>{
@@ -397,6 +423,7 @@ async function refresh(){
     loadFrames();
     handleGrid(j);
     renderSensors(j);
+    renderWater(j);
     render();
   }catch(e){document.getElementById('phase').textContent='Controller unreachable';}
 }
