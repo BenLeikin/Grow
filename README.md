@@ -63,6 +63,20 @@ The three app files locate everything relative to their own path, so they must
 stay together in the project root. `scripts/setup.sh` deploys them there from the
 repo (or from embedded copies if run standalone).
 
+## Dashboard login (optional)
+
+The dashboard is open by default. To make it read-only until you log in, set a
+password (hidden prompt, written safely into config.json):
+
+```
+./venv/bin/python scripts/set_password.py
+sudo systemctl restart growlight
+```
+
+A blank password disables login again. The login box appears top-right once a
+password is set; editing controls are hidden until you log in. Enforcement is
+server-side, so viewers cannot change anything regardless of the UI.
+
 ## Features
 
 - Photoperiod synced to local sunrise/sunset with configurable ramps,

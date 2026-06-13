@@ -105,6 +105,15 @@ else
   echo "Done. Dashboard:  http://$IP:5000"
   systemctl --no-pager --full status growlight || true
 fi
+echo "--------------------------------------------------"
+if [[ -f "$APP_DIR/config.json" ]] && \
+   grep -Eq '"password_hash"[[:space:]]*:[[:space:]]*"[^"]' "$APP_DIR/config.json"; then
+  echo "Dashboard login: password is SET. To change it:"
+else
+  echo "Dashboard login: NONE (dashboard is open to anyone who can reach it)."
+  echo "To require login, set a password:"
+fi
+echo "    $APP_DIR/venv/bin/python $APP_DIR/scripts/set_password.py"
 echo "Logs:  journalctl -u growlight -f"
 echo "Update flow:  git pull && sudo systemctl restart growlight"
 echo "=================================================="
