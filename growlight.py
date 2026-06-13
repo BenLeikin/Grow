@@ -31,6 +31,10 @@ from astral.sun import sun
 from flask import (Flask, jsonify, render_template, request,
                    send_file, send_from_directory)
 
+import db
+import sensors
+import notify
+
 # ------------------- defaults (overridden by config.json) -------------------
 DEFAULTS = {
     "latitude": 34.17,
@@ -44,6 +48,8 @@ DEFAULTS = {
     "capture_interval_min": 30,
     "capture_brightness": 100,  # light level held during each photo
     "roi": "",                  # crop as "x,y,w,h" fractions, blank = full frame
+    "sample_interval_min": 5,   # how often to read + log sensors
+    "ntfy_topic": "",           # set to enable push notifications (see notify.py)
     "grid": {                   # cell-mapping overlay
         "corners": [[0.12, 0.10], [0.88, 0.10], [0.88, 0.92], [0.12, 0.92]],
         "rows": 4, "cols": 4, "names": {}, "show": True,
@@ -160,6 +166,32 @@ def photo_inventory():
 
 
 # --------------------------- control loop ---------------------------
+
+def sample_loop():
+    """Read all sensors on an interval, log them in one transaction, and run
+    daily downsampling. Tolerant: a read failure logs nothing and tries again
+    next tick rather than killing the thread."""
+    db.init()
+    last_prune = 0.0
+    while True:
+        with settings_lock:
+            interval = max(1, int(settings.get("sample_interval_min", 5)))
+        try:
+            readings = sensors.read_all()
+            if readings:
+                db.log_many(list(readings.items()))
+        except Exception as e:
+            print(f"sample_loop error: {e}")
+        # housekeeping once a day: roll raw -> hourly, prune old raw
+        now = time.time()
+        if now - last_prune > 86400:
+            try:
+                db.downsample_and_prune()
+            except Exception as e:
+                print(f"prune error: {e}")
+            last_prune = now
+        time.sleep(interval * 60)
+
 
 def control_loop():
     seen = None
@@ -420,7 +452,22 @@ def status():
         video_time=(datetime.fromtimestamp(VIDEO_PATH.stat().st_mtime)
                     .isoformat() if VIDEO_PATH.exists() else None),
         settings=cfg,
+        sensors={k: {"ts": ts, "value": v}
+                 for k, (ts, v) in db.latest().items()},
+        sensor_stub=sensors.stub_mode(),
     )
+
+
+@app.route("/api/series")
+def series():
+    sensor = request.args.get("sensor", "")
+    try:
+        hours = max(1, min(24 * 90, int(request.args.get("hours", 168))))
+    except ValueError:
+        hours = 168
+    if not sensor:
+        return jsonify(error="sensor required"), 400
+    return jsonify(sensor=sensor, hours=hours, points=db.series(sensor, hours))
 
 
 @app.route("/api/settings", methods=["POST"])
@@ -484,5 +531,6 @@ signal.signal(signal.SIGTERM, cleanup)
 if __name__ == "__main__":
     threading.Thread(target=control_loop, daemon=True).start()
     threading.Thread(target=capture_loop, daemon=True).start()
+    threading.Thread(target=sample_loop, daemon=True).start()
     print(f"Dashboard at http://0.0.0.0:{HTTP_PORT}")
     app.run(host="0.0.0.0", port=HTTP_PORT, threaded=True)
