@@ -95,12 +95,37 @@
     .glayout{display:grid;grid-template-columns:0.7fr 1.6fr;gap:14px;
       grid-template-areas:
         "left media"
+        "sens sens"
         "set  set";
       align-items:start}
     .glayout .card{margin-bottom:0}
     /* left column: cards packed to the top, no stretching into empty space */
     .aleft{grid-area:left;display:flex;flex-direction:column;gap:14px;align-self:start}
     .amedia{grid-area:media;display:flex;flex-direction:column;gap:14px;align-self:start}
+    .asensors{grid-area:sens}
     .aset{grid-area:set}
     #photo,#vframe{max-height:64vh;object-fit:contain}
   }
+
+/* ---- sensors card ---- */
+.banner{background:#fdf3d6;border:1px solid #e8c96a;color:#7a5a13;
+  padding:8px 12px;border-radius:8px;font-size:13px;margin-bottom:12px}
+.sreadout{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px}
+.sgroup{flex:1 1 200px;min-width:170px}
+.sgroup h3{margin:0 0 6px;font-size:13px;color:var(--leaf);font-weight:700;
+  text-transform:uppercase;letter-spacing:.04em}
+.schip{display:inline-flex;align-items:baseline;gap:5px;background:#f1f6ea;
+  border:1px solid var(--line);border-radius:8px;padding:5px 9px;margin:0 6px 6px 0;
+  font-size:13px}
+.schip b{font-size:15px;color:var(--ink)}
+.schip .u{color:var(--leaf);font-size:12px}
+.chartctl{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:8px}
+.chartctl select{width:auto;min-width:160px;margin-top:0}
+.ranges button{margin:0 0 0 4px;padding:5px 12px;background:#eef4e6;color:var(--leaf);
+  border:1px solid var(--line)}
+.ranges button.on{background:var(--leaf);color:#fff;border-color:var(--leaf)}
+#chartinfo{font-size:12px;color:var(--leaf)}
+#histchart{width:100%;height:auto;background:#f6faf1;border:1px solid var(--line);
+  border-radius:10px}
+.gmoist{fill:#1d3324;font:700 17px sans-serif;paint-order:stroke;
+  stroke:#eafff0;stroke-width:3px}

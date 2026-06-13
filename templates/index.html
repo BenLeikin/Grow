@@ -74,6 +74,25 @@
 
 </div>
 
+<div class="card asensors" id="sensorcard" style="display:none">
+  <h2>&#128202; Sensors</h2>
+  <div id="stubbanner" class="banner" style="display:none">
+    Demo data &mdash; no sensors wired yet. These values are simulated.
+  </div>
+  <div class="sreadout" id="sreadout"></div>
+  <div class="chartctl">
+    <select id="chartsensor" aria-label="Sensor to chart"></select>
+    <span class="ranges" id="ranges">
+      <button type="button" data-h="24">24h</button>
+      <button type="button" data-h="168" class="on">7d</button>
+      <button type="button" data-h="720">30d</button>
+    </span>
+    <span id="chartinfo"></span>
+  </div>
+  <svg id="histchart" viewBox="0 0 720 240" preserveAspectRatio="none"
+       role="img" aria-label="Sensor history"></svg>
+</div>
+
 <details class="card aset">
   <summary><h2>&#127807; Settings</h2></summary>
   <form id="cfgform">

@@ -194,6 +194,104 @@ document.getElementById('scrub').addEventListener('input',ev=>{
   stopPlay();fidx=+ev.target.value;showFrame();
 });
 
+// ---------------- sensors: readout, chart, overlay ----------------
+let sensorData={}, sensorStub=false;
+let chartSensor=null, chartHours=168;
+
+function c2f(c){return c*9/5+32;}
+// key -> {group, label, value, unit}
+function sensorMeta(key, val){
+  if(key==='temp:air')   return {group:'Environment', label:'Air',      value:c2f(val).toFixed(1), unit:'\u00b0F'};
+  if(key==='humidity')   return {group:'Environment', label:'Humidity', value:val.toFixed(0),       unit:'%'};
+  if(key==='lux')        return {group:'Environment', label:'Light',    value:Math.round(val).toLocaleString(), unit:'lx'};
+  if(key.startsWith('temp:soil_'))
+                         return {group:'Soil temp',   label:'Probe '+key.split('_')[1], value:c2f(val).toFixed(1), unit:'\u00b0F'};
+  if(key.startsWith('moisture:')){
+    const cell=key.slice(9);
+    const nm=(grid&&grid.names&&grid.names[cell])?grid.names[cell]:cell;
+    return {group:'Moisture', label:nm, value:val.toFixed(0), unit:'%'};
+  }
+  return {group:'Other', label:key, value:String(val), unit:''};
+}
+function renderSensors(j){
+  sensorData=j.sensors||{};
+  sensorStub=!!j.sensor_stub;
+  const card=document.getElementById('sensorcard');
+  const keys=Object.keys(sensorData);
+  card.style.display=keys.length?'':'none';
+  document.getElementById('stubbanner').style.display=sensorStub?'':'none';
+  // grouped readout
+  const groups={};
+  for(const k of keys){
+    const m=sensorMeta(k, sensorData[k].value);
+    (groups[m.group]=groups[m.group]||[]).push(m);
+  }
+  const order=['Environment','Soil temp','Moisture','Other'];
+  let h='';
+  for(const g of order){
+    if(!groups[g])continue;
+    h+=`<div class="sgroup"><h3>${g}</h3>`;
+    for(const m of groups[g])
+      h+=`<span class="schip">${m.label} <b>${m.value}</b><span class="u">${m.unit}</span></span>`;
+    h+='</div>';
+  }
+  document.getElementById('sreadout').innerHTML=h;
+  // chart sensor dropdown (preserve selection)
+  const sel=document.getElementById('chartsensor');
+  const want=keys.sort().join(',');
+  if(sel.dataset.keys!==want){
+    sel.dataset.keys=want;
+    const cur=sel.value;
+    sel.innerHTML=keys.map(k=>{const m=sensorMeta(k,0);
+      return `<option value="${k}">${m.group}: ${m.label}</option>`;}).join('');
+    if(keys.includes(cur))sel.value=cur;
+    else{chartSensor=keys.find(k=>k.startsWith('moisture:'))||keys[0];sel.value=chartSensor;loadChart();}
+  }
+  if(grid)drawGrid();   // refresh per-cell moisture overlay
+}
+async function loadChart(){
+  if(!chartSensor)return;
+  const info=document.getElementById('chartinfo');info.textContent='loading...';
+  try{
+    const r=await fetch(`/api/series?sensor=${encodeURIComponent(chartSensor)}&hours=${chartHours}`);
+    const j=await r.json();drawChart(j.points||[]);info.textContent='';
+  }catch(e){info.textContent='chart unavailable';}
+}
+function drawChart(pts){
+  const svg=document.getElementById('histchart'),W=720,H=240,P=34;
+  const toF=chartSensor&&chartSensor.startsWith('temp:');
+  const data=pts.map(([t,v])=>[t, toF?c2f(v):v]);
+  if(data.length<2){svg.innerHTML=`<text x="${W/2}" y="${H/2}" text-anchor="middle" fill="#7a8a72" font-size="15">Not enough data yet</text>`;return;}
+  const xs=data.map(d=>d[0]),ys=data.map(d=>d[1]);
+  const x0=Math.min(...xs),x1=Math.max(...xs);
+  let y0=Math.min(...ys),y1=Math.max(...ys);if(y0===y1){y0-=1;y1+=1;}
+  const sx=t=>P+(t-x0)/(x1-x0)*(W-2*P);
+  const sy=v=>H-P-(v-y0)/(y1-y0)*(H-2*P);
+  const line=data.map(d=>`${sx(d[0]).toFixed(1)},${sy(d[1]).toFixed(1)}`).join(' ');
+  const fmtT=t=>{const d=new Date(t*1000);
+    return chartHours<=24?d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})
+                         :d.toLocaleDateString([],{month:'numeric',day:'numeric'});};
+  let h='';
+  h+=`<line x1="${P}" y1="${H-P}" x2="${W-P}" y2="${H-P}" stroke="#cdddc0"/>`;
+  h+=`<line x1="${P}" y1="${P}" x2="${P}" y2="${H-P}" stroke="#cdddc0"/>`;
+  h+=`<polyline fill="none" stroke="#4a7c59" stroke-width="2.5" points="${line}"/>`;
+  h+=`<text x="${P-6}" y="${sy(y1)+4}" text-anchor="end" font-size="12" fill="#7a8a72">${y1.toFixed(0)}</text>`;
+  h+=`<text x="${P-6}" y="${sy(y0)+4}" text-anchor="end" font-size="12" fill="#7a8a72">${y0.toFixed(0)}</text>`;
+  h+=`<text x="${P}" y="${H-P+18}" font-size="12" fill="#7a8a72">${fmtT(x0)}</text>`;
+  h+=`<text x="${W-P}" y="${H-P+18}" text-anchor="end" font-size="12" fill="#7a8a72">${fmtT(x1)}</text>`;
+  svg.innerHTML=h;
+}
+function initSensors(){
+  document.getElementById('chartsensor').addEventListener('change',e=>{
+    chartSensor=e.target.value;loadChart();});
+  document.querySelectorAll('#ranges button').forEach(b=>{
+    b.addEventListener('click',()=>{
+      chartHours=+b.dataset.h;
+      document.querySelectorAll('#ranges button').forEach(x=>x.classList.remove('on'));
+      b.classList.add('on');loadChart();});
+  });
+}
+
 // ---------------- cell grid overlay ----------------
 let grid=null, gdrag=-1;
 function colL(c){return String.fromCharCode(65+c);}
@@ -204,6 +302,8 @@ function bil(C,u,v){
   return [(1-v)*t[0]+v*b[0],(1-v)*t[1]+v*b[1]];
 }
 function esc(s){return (s||'').replace(/[<>&]/g,'');}
+function moistColor(p){const h=35+(210-35)*(Math.max(0,Math.min(100,p))/100);
+  return `hsla(${h.toFixed(0)},60%,50%,0.28)`;}
 function drawGrid(){
   const svg=document.getElementById('gridsvg');
   if(!grid||!svg)return;
@@ -215,11 +315,14 @@ function drawGrid(){
     const p=[bil(C,c/K,r/R),bil(C,(c+1)/K,r/R),bil(C,(c+1)/K,(r+1)/R),bil(C,c/K,(r+1)/R)];
     const pts=p.map(q=>(q[0]*S).toFixed(1)+','+(q[1]*S).toFixed(1)).join(' ');
     const k=cellKey(r,c);
-    h+=`<polygon class="gc" data-k="${k}" points="${pts}" fill="rgba(127,176,105,0.12)" stroke="#eafff0" stroke-width="2"/>`;
+    const mo=sensorData['moisture:'+k];
+    const fill=mo?moistColor(mo.value):'rgba(127,176,105,0.12)';
+    h+=`<polygon class="gc" data-k="${k}" points="${pts}" fill="${fill}" stroke="#eafff0" stroke-width="2"/>`;
     const ctr=bil(C,(c+0.5)/K,(r+0.5)/R);
     h+=`<text x="${(ctr[0]*S).toFixed(1)}" y="${(ctr[1]*S-3).toFixed(1)}" class="glbl" text-anchor="middle">${k}</text>`;
     const nm=grid.names[k];
     if(nm)h+=`<text x="${(ctr[0]*S).toFixed(1)}" y="${(ctr[1]*S+19).toFixed(1)}" class="gnm" text-anchor="middle">${esc(nm)}</text>`;
+    if(mo)h+=`<text x="${(ctr[0]*S).toFixed(1)}" y="${(ctr[1]*S+(nm?40:19)).toFixed(1)}" class="gmoist" text-anchor="middle">${mo.value.toFixed(0)}%</text>`;
   }
   for(let i=0;i<4;i++)
     h+=`<circle class="gh" data-i="${i}" cx="${(C[i][0]*S).toFixed(1)}" cy="${(C[i][1]*S).toFixed(1)}" r="16"/>`;
@@ -293,6 +396,7 @@ async function refresh(){
     renderVideoState(j);
     loadFrames();
     handleGrid(j);
+    renderSensors(j);
     render();
   }catch(e){document.getElementById('phase').textContent='Controller unreachable';}
 }
@@ -324,4 +428,5 @@ setInterval(()=>{const d=new Date();
 setInterval(refresh,15000);
 setInterval(render,60000);
 initGridSvg();
+initSensors();
 refresh();
