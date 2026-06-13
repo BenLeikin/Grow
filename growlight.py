@@ -249,9 +249,12 @@ def render_worker():
             ["ffmpeg", "-loglevel", "error", "-y",
              "-framerate", "24", "-pattern_type", "glob",
              "-i", str(TIMELAPSE_DIR / "*.jpg"),
-             "-vf", "scale=1280:-2",
+             # full resolution; ensure even dimensions for libx264
+             "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
              "-c:v", "libx264", "-preset", "ultrafast",
-             "-pix_fmt", "yuv420p", str(VIDEO_PATH)],
+             "-pix_fmt", "yuv420p",
+             "-movflags", "+faststart",   # index at front: streams/previews properly
+             str(VIDEO_PATH)],
             capture_output=True, timeout=3600)
         if r.returncode == 0 and VIDEO_PATH.exists():
             mb = VIDEO_PATH.stat().st_size / 1e6
@@ -336,7 +339,7 @@ PAGE = r"""<!doctype html>
   details[open] summary::after{content:" \25B4"}
   details[open] summary{display:block;margin-bottom:12px}
   #photo,#vframe{width:100%;border-radius:12px;border:1.5px solid var(--line);
-    display:block;background:#dfe9d4;min-height:120px}
+    display:block;background:#dfe9d4;min-height:160px}
   #photoinfo{font-size:13px;color:var(--leaf);margin-top:8px}
   .pctrl{display:flex;align-items:center;gap:12px;margin-top:12px}
   .pctrl button{margin-top:0;padding:8px 16px;white-space:nowrap}
@@ -370,7 +373,7 @@ PAGE = r"""<!doctype html>
     body{max-width:1150px;padding:16px 24px}
     header{padding-bottom:6px;margin-bottom:4px}
     .vine{margin-bottom:12px}
-    .glayout{display:grid;grid-template-columns:0.85fr 1.4fr;gap:14px;
+    .glayout{display:grid;grid-template-columns:0.7fr 1.6fr;gap:14px;
       grid-template-areas:
         "phase media"
         "chart media"
@@ -381,7 +384,7 @@ PAGE = r"""<!doctype html>
     .aphase{grid-area:phase}.achart{grid-area:chart}.afacts{grid-area:facts}
     .amedia{grid-area:media;display:flex;flex-direction:column;gap:14px}
     .aset{grid-area:set}
-    #photo,#vframe{max-height:44vh;object-fit:contain}
+    #photo,#vframe{max-height:64vh;object-fit:contain}
   }
 </style>
 </head>
