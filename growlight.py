@@ -44,6 +44,10 @@ DEFAULTS = {
     "capture_interval_min": 30,
     "capture_brightness": 100,  # light level held during each photo
     "roi": "",                  # crop as "x,y,w,h" fractions, blank = full frame
+    "grid": {                   # cell-mapping overlay
+        "corners": [[0.12, 0.10], [0.88, 0.10], [0.88, 0.92], [0.12, 0.92]],
+        "rows": 4, "cols": 4, "names": {}, "show": True,
+    },
 }
 
 GPIO_PIN      = 18
@@ -73,7 +77,8 @@ state = {"brightness": 0.0, "on": None, "off": None,
          "sunrise": None, "sunset": None}
 state_lock = threading.Lock()
 capturing = False   # capture thread holds the light; control loop defers
-render = {"state": "idle", "msg": "", "frames": 0}   # idle|running|done|error
+render = {"state": "idle", "msg": "", "frames": 0,
+          "started": None, "elapsed": None}   # idle|running|done|error
 render_lock = threading.Lock()
 VIDEO_PATH = TIMELAPSE_DIR / "timelapse.mp4"
 
@@ -240,35 +245,53 @@ def capture_loop():
 # ----------------------------- video render -----------------------------
 
 def render_worker():
+    import time as _t
+    t0 = _t.monotonic()
     frames = sorted(TIMELAPSE_DIR.glob("*.jpg"))
     with render_lock:
         render.update(state="running", frames=len(frames),
-                      msg=f"Rendering {len(frames)} frames...")
+                      started=datetime.now(ZoneInfo(settings["timezone"])).isoformat(),
+                      elapsed=None, msg=f"Rendering {len(frames)} frames...")
     try:
+        tmp = TIMELAPSE_DIR / "_render_tmp.mp4"
+        # Encode pass: small footprint so the 512MB Zero never OOMs.
+        # 1280-wide, ultrafast, single thread, no faststart here (the
+        # +faststart second pass rewrites the whole file in memory and is
+        # what tips the box over). We add faststart as a cheap remux after.
         r = subprocess.run(
             ["ffmpeg", "-loglevel", "error", "-y",
              "-framerate", "24", "-pattern_type", "glob",
              "-i", str(TIMELAPSE_DIR / "*.jpg"),
-             # 1920-wide: sharp anywhere, light enough for the Zero W's RAM
-             "-vf", "scale=1920:-2",
-             "-c:v", "libx264", "-preset", "veryfast",
-             "-crf", "23", "-threads", "1",
+             "-vf", "scale=1280:-2",
+             "-c:v", "libx264", "-preset", "ultrafast",
+             "-crf", "24", "-threads", "1",
              "-pix_fmt", "yuv420p",
-             "-movflags", "+faststart",   # index at front: streams/previews properly
-             str(VIDEO_PATH)],
+             str(tmp)],
             capture_output=True, timeout=3600)
+        # Faststart as a stream-copy remux: no re-encode, trivial memory.
+        if r.returncode == 0 and tmp.exists():
+            r2 = subprocess.run(
+                ["ffmpeg", "-loglevel", "error", "-y", "-i", str(tmp),
+                 "-c", "copy", "-movflags", "+faststart", str(VIDEO_PATH)],
+                capture_output=True, timeout=600)
+            tmp.unlink(missing_ok=True)
+            if r2.returncode != 0:
+                r = r2  # surface the remux error below
+        dt = _t.monotonic() - t0
         if r.returncode == 0 and VIDEO_PATH.exists():
             mb = VIDEO_PATH.stat().st_size / 1e6
             with render_lock:
-                render.update(state="done",
-                              msg=f"{len(frames)} frames, {mb:.1f} MB")
+                render.update(state="done", elapsed=round(dt, 1),
+                              msg=f"{len(frames)} frames, {mb:.1f} MB, {dt:.0f}s")
         else:
             err = r.stderr.decode(errors="replace")[-200:]
             with render_lock:
-                render.update(state="error", msg=err or "ffmpeg failed")
+                render.update(state="error", elapsed=round(dt, 1),
+                              msg=err or "ffmpeg failed")
     except Exception as e:
         with render_lock:
-            render.update(state="error", msg=str(e))
+            render.update(state="error", elapsed=round(_t.monotonic() - t0, 1),
+                          msg=str(e))
 
 
 def start_render():
@@ -341,6 +364,17 @@ PAGE = r"""<!doctype html>
   details[open] summary{display:block;margin-bottom:12px}
   #photo,#vframe{width:100%;border-radius:12px;border:1.5px solid var(--line);
     display:block;background:#dfe9d4;min-height:160px}
+  .imgwrap{position:relative;line-height:0}
+  #gridsvg{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair}
+  .gh{fill:#e8b04b;stroke:#27432e;stroke-width:3}
+  .gc{cursor:pointer}
+  .glbl{fill:#fff;font:700 26px Georgia,serif;paint-order:stroke;stroke:#1d3324;stroke-width:4px}
+  .gnm{fill:#eafff0;font:600 19px sans-serif;paint-order:stroke;stroke:#1d3324;stroke-width:3px}
+  .gridctl{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;margin-top:10px;
+    font-size:13px;color:var(--leaf)}
+  .gridctl button{margin-top:0;padding:6px 14px}
+  .gridctl input[type=number]{width:54px}
+  .gridctl input[type=checkbox]{width:auto}
   #photoinfo{font-size:13px;color:var(--leaf);margin-top:8px}
   .pctrl{display:flex;align-items:center;gap:12px;margin-top:12px}
   .pctrl button{margin-top:0;padding:8px 16px;white-space:nowrap}
@@ -376,14 +410,13 @@ PAGE = r"""<!doctype html>
     .vine{margin-bottom:12px}
     .glayout{display:grid;grid-template-columns:0.7fr 1.6fr;gap:14px;
       grid-template-areas:
-        "phase media"
-        "chart media"
-        "facts media"
-        "set   set";
+        "left media"
+        "set  set";
       align-items:start}
     .glayout .card{margin-bottom:0}
-    .aphase{grid-area:phase}.achart{grid-area:chart}.afacts{grid-area:facts}
-    .amedia{grid-area:media;display:flex;flex-direction:column;gap:14px}
+    /* left column: cards packed to the top, no stretching into empty space */
+    .aleft{grid-area:left;display:flex;flex-direction:column;gap:14px;align-self:start}
+    .amedia{grid-area:media;display:flex;flex-direction:column;gap:14px;align-self:start}
     .aset{grid-area:set}
     #photo,#vframe{max-height:64vh;object-fit:contain}
   }
@@ -398,6 +431,8 @@ PAGE = r"""<!doctype html>
 
 <main class="glayout">
 
+<div class="aleft">
+
 <div class="card phase aphase">
   <div class="bulb" id="bulb"></div>
   <div>
@@ -411,12 +446,28 @@ PAGE = r"""<!doctype html>
   <svg id="chart" viewBox="0 0 640 240" role="img" aria-label="Today's light curve"></svg>
 </div>
 
+<div class="card afacts">
+  <dl class="grid" id="facts"></dl>
+</div>
+
+</div>
+
 <div class="amedia">
 
 <div class="card asnap" id="photocard" style="display:none">
   <h2>&#128247; Latest snapshot</h2>
-  <img id="photo" alt="Latest seedling photo">
+  <div class="imgwrap">
+    <img id="photo" alt="Latest seedling photo">
+    <svg id="gridsvg" viewBox="0 0 1000 1000" preserveAspectRatio="none" style="display:none"></svg>
+  </div>
   <div id="photoinfo"></div>
+  <div class="gridctl">
+    <label><input type="checkbox" id="gridshow"> Show cell grid</label>
+    <button type="button" id="detectbtn">&#128269; Detect</button>
+    <span>Rows <input type="number" id="gridrows" min="1" max="12"></span>
+    <span>Cols <input type="number" id="gridcols" min="1" max="12"></span>
+    <span id="gridinfo"></span>
+  </div>
 </div>
 
 <div class="card avideo" id="videocard" style="display:none">
@@ -437,10 +488,6 @@ PAGE = r"""<!doctype html>
   </div>
 </div>
 
-</div>
-
-<div class="card afacts">
-  <dl class="grid" id="facts"></dl>
 </div>
 
 <details class="card aset">
@@ -610,31 +657,153 @@ async function loadFrames(){
 document.getElementById('playbtn').addEventListener('click',togglePlay);
 document.getElementById('renderbtn').addEventListener('click',async()=>{
   const info=document.getElementById('renderinfo');
+  const dl=document.getElementById('dlbtn');
+  const btn=document.getElementById('renderbtn');
+  dl.style.display='none';          // hide download instantly, no race
+  btn.disabled=true;
+  btn.textContent='\u23F3 Rendering...';
+  renderStart=Date.now();clearRenderTimer();renderTimer=setInterval(tickRender,1000);
   info.textContent='Starting render...';
   try{
     const r=await fetch('/api/render',{method:'POST'});
     const j=await r.json();
-    if(!r.ok)info.textContent=j.error||'Render failed to start';
-  }catch(e){info.textContent='Render failed to start';}
+    if(!r.ok){info.textContent=j.error||'Render failed to start';btn.disabled=false;
+      btn.textContent='\uD83C\uDFA5 Render video';}
+  }catch(e){info.textContent='Render failed to start';btn.disabled=false;
+    btn.textContent='\uD83C\uDFA5 Render video';}
 });
+let renderTimer=null, renderStart=null;
+function clearRenderTimer(){if(renderTimer){clearInterval(renderTimer);renderTimer=null;}}
+function tickRender(){
+  if(renderStart===null)return;
+  const s=Math.floor((Date.now()-renderStart)/1000);
+  const mm=String(Math.floor(s/60)).padStart(2,'0'),ss=String(s%60).padStart(2,'0');
+  const f=window._renderFrames?` of ${window._renderFrames} frames`:'';
+  document.getElementById('renderinfo').textContent=
+    `Rendering${f}... ${mm}:${ss} elapsed`;
+}
 function renderVideoState(j){
   const info=document.getElementById('renderinfo');
   const dl=document.getElementById('dlbtn');
   const btn=document.getElementById('renderbtn');
   const st=j.render||{};
-  btn.disabled=(st.state==='running');
-  if(st.state==='running'){info.textContent=st.msg+' (a few minutes on the Zero)';}
-  else if(st.state==='error'){info.textContent='Render error: '+st.msg;}
-  else if(j.video_time){
-    const when=new Date(j.video_time);
-    info.textContent='Video from '+when.toLocaleString()+
-      (st.state==='done'?' \u00b7 '+st.msg:'');
-  } else {info.textContent='No video rendered yet';}
-  dl.style.display=j.video_time?'':'none';
+  const running=(st.state==='running');
+  btn.disabled=running;
+  btn.textContent=running?'\u23F3 Rendering...':'\uD83C\uDFA5 Render video';
+  if(running){
+    window._renderFrames=st.frames||0;
+    if(renderStart===null){
+      renderStart=st.started?new Date(st.started).getTime():Date.now();
+      clearRenderTimer();renderTimer=setInterval(tickRender,1000);
+    }
+    tickRender();
+  } else {
+    clearRenderTimer();renderStart=null;
+    if(st.state==='error'){
+      info.textContent='Render error'+(st.elapsed?` after ${Math.round(st.elapsed)}s`:'')+
+        ': '+st.msg;
+    } else if(j.video_time){
+      const when=new Date(j.video_time);
+      info.textContent='Video from '+when.toLocaleString()+
+        (st.state==='done'?' \u00b7 '+st.msg:'');
+    } else {info.textContent='No video rendered yet';}
+  }
+  dl.style.display=(!running && j.video_time)?'':'none';
+  if(!running && j.video_time)
+    dl.href='/video?t='+encodeURIComponent(j.video_time);
 }
 document.getElementById('scrub').addEventListener('input',ev=>{
   stopPlay();fidx=+ev.target.value;showFrame();
 });
+
+// ---------------- cell grid overlay ----------------
+let grid=null, gdrag=-1;
+function colL(c){return String.fromCharCode(65+c);}
+function cellKey(r,c){return colL(c)+(r+1);}
+function bil(C,u,v){
+  const t=[(1-u)*C[0][0]+u*C[1][0],(1-u)*C[0][1]+u*C[1][1]];
+  const b=[(1-u)*C[3][0]+u*C[2][0],(1-u)*C[3][1]+u*C[2][1]];
+  return [(1-v)*t[0]+v*b[0],(1-v)*t[1]+v*b[1]];
+}
+function esc(s){return (s||'').replace(/[<>&]/g,'');}
+function drawGrid(){
+  const svg=document.getElementById('gridsvg');
+  if(!grid||!svg)return;
+  svg.style.display=grid.show?'':'none';
+  if(!grid.show){svg.innerHTML='';return;}
+  const C=grid.corners,R=grid.rows,K=grid.cols,S=1000;
+  let h='';
+  for(let r=0;r<R;r++)for(let c=0;c<K;c++){
+    const p=[bil(C,c/K,r/R),bil(C,(c+1)/K,r/R),bil(C,(c+1)/K,(r+1)/R),bil(C,c/K,(r+1)/R)];
+    const pts=p.map(q=>(q[0]*S).toFixed(1)+','+(q[1]*S).toFixed(1)).join(' ');
+    const k=cellKey(r,c);
+    h+=`<polygon class="gc" data-k="${k}" points="${pts}" fill="rgba(127,176,105,0.12)" stroke="#eafff0" stroke-width="2"/>`;
+    const ctr=bil(C,(c+0.5)/K,(r+0.5)/R);
+    h+=`<text x="${(ctr[0]*S).toFixed(1)}" y="${(ctr[1]*S-3).toFixed(1)}" class="glbl" text-anchor="middle">${k}</text>`;
+    const nm=grid.names[k];
+    if(nm)h+=`<text x="${(ctr[0]*S).toFixed(1)}" y="${(ctr[1]*S+19).toFixed(1)}" class="gnm" text-anchor="middle">${esc(nm)}</text>`;
+  }
+  for(let i=0;i<4;i++)
+    h+=`<circle class="gh" data-i="${i}" cx="${(C[i][0]*S).toFixed(1)}" cy="${(C[i][1]*S).toFixed(1)}" r="16"/>`;
+  svg.innerHTML=h;
+}
+function ptFrac(svg,e){
+  const r=svg.getBoundingClientRect();
+  return [Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),
+          Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))];
+}
+async function saveGrid(){
+  try{await fetch('/api/grid',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(grid)});}catch(e){}
+}
+async function detectGrid(){
+  const info=document.getElementById('gridinfo');info.textContent='Detecting...';
+  try{
+    const r=await fetch('/api/detect_grid',{method:'POST'});const j=await r.json();
+    if(j.ok&&j.corners){grid.corners=j.corners;if(!grid.show){grid.show=true;
+      document.getElementById('gridshow').checked=true;}
+      drawGrid();saveGrid();info.textContent='Detected \u2014 drag corners to fine-tune.';}
+    else info.textContent=j.error||'Detection failed; place corners by hand.';
+  }catch(e){info.textContent='Detection unavailable; place corners by hand.';}
+}
+function syncGridControls(){
+  if(!grid)return;
+  document.getElementById('gridshow').checked=!!grid.show;
+  document.getElementById('gridrows').value=grid.rows;
+  document.getElementById('gridcols').value=grid.cols;
+}
+function initGridSvg(){
+  const svg=document.getElementById('gridsvg');
+  svg.addEventListener('pointerdown',e=>{
+    if(e.target.classList.contains('gh')){
+      gdrag=+e.target.dataset.i;svg.setPointerCapture(e.pointerId);e.preventDefault();}
+  });
+  svg.addEventListener('pointermove',e=>{
+    if(gdrag<0||!grid)return;grid.corners[gdrag]=ptFrac(svg,e);drawGrid();});
+  svg.addEventListener('pointerup',()=>{if(gdrag>=0){gdrag=-1;saveGrid();}});
+  svg.addEventListener('click',e=>{
+    if(!e.target.classList.contains('gc'))return;
+    const k=e.target.dataset.k,cur=grid.names[k]||'';
+    const v=prompt('Name for cell '+k+':',cur);
+    if(v!==null){if(v.trim())grid.names[k]=v.trim();else delete grid.names[k];
+      drawGrid();saveGrid();}
+  });
+  document.getElementById('gridshow').addEventListener('change',e=>{
+    grid.show=e.target.checked;drawGrid();saveGrid();});
+  document.getElementById('detectbtn').addEventListener('click',detectGrid);
+  const upd=()=>{grid.rows=Math.max(1,Math.min(12,+document.getElementById('gridrows').value||4));
+    grid.cols=Math.max(1,Math.min(12,+document.getElementById('gridcols').value||4));
+    drawGrid();saveGrid();};
+  document.getElementById('gridrows').addEventListener('change',upd);
+  document.getElementById('gridcols').addEventListener('change',upd);
+}
+function handleGrid(j){
+  if(j.settings&&j.settings.grid){
+    if(grid===null){grid=j.settings.grid;
+      if(!grid.names)grid.names={};syncGridControls();}
+    if(gdrag<0)drawGrid();
+  }
+}
 
 async function refresh(){
   try{
@@ -645,6 +814,7 @@ async function refresh(){
     renderPhoto(j);
     renderVideoState(j);
     loadFrames();
+    handleGrid(j);
     render();
   }catch(e){document.getElementById('phase').textContent='Controller unreachable';}
 }
@@ -675,6 +845,7 @@ setInterval(()=>{const d=new Date();
   if(S){S.now=d;}},1000);
 setInterval(refresh,15000);
 setInterval(render,60000);
+initGridSvg();
 refresh();
 </script>
 </body>
@@ -706,6 +877,50 @@ def thumb(name):
     resp = send_from_directory(THUMB_DIR, name, mimetype="image/jpeg")
     resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return resp
+
+
+@app.route("/api/grid", methods=["POST"])
+def update_grid():
+    data = request.get_json(silent=True) or {}
+    try:
+        corners = data["corners"]
+        if len(corners) != 4:
+            raise ValueError
+        corners = [[float(x), float(y)] for x, y in corners]
+        for x, y in corners:
+            if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+                raise ValueError
+        rows = int(data.get("rows", 4))
+        cols = int(data.get("cols", 4))
+        if not (1 <= rows <= 12 and 1 <= cols <= 12):
+            raise ValueError
+        names = {str(k): str(v)[:40] for k, v in (data.get("names") or {}).items()}
+        show = bool(data.get("show", True))
+    except (KeyError, TypeError, ValueError):
+        return jsonify(error="Invalid grid data."), 400
+    with settings_lock:
+        settings["grid"] = {"corners": corners, "rows": rows, "cols": cols,
+                            "names": names, "show": show}
+        CONFIG_PATH.write_text(json.dumps(settings, indent=2))
+    return jsonify(ok=True)
+
+
+@app.route("/api/detect_grid", methods=["POST"])
+def detect_grid():
+    count, latest, _ = photo_inventory()
+    if not count or latest is None:
+        return jsonify(ok=False, error="No photo to detect from yet."), 200
+    helper = Path(__file__).with_name("detect_corners.py")
+    if not helper.exists():
+        return jsonify(ok=False, error="Detector not installed."), 200
+    try:
+        r = subprocess.run([sys.executable, str(helper), str(latest)],
+                           capture_output=True, timeout=60)
+        out = r.stdout.decode(errors="replace").strip()
+        return jsonify(json.loads(out) if out else
+                       {"ok": False, "error": "Detector returned nothing."}), 200
+    except Exception as e:
+        return jsonify(ok=False, error=f"Detector error: {e}"), 200
 
 
 @app.route("/api/render", methods=["POST"])
