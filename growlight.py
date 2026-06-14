@@ -62,7 +62,7 @@ DEFAULTS = {
     "pump_daily_max_seconds": 180,  # runaway backstop
     "grid": {                   # cell-mapping overlay
         "corners": [[0.12, 0.10], [0.88, 0.10], [0.88, 0.92], [0.12, 0.92]],
-        "rows": 4, "cols": 4, "names": {}, "show": True,
+        "rows": 4, "cols": 4, "names": {}, "show": True, "locked": False,
     },
 }
 
@@ -112,6 +112,7 @@ render = {"state": "idle", "msg": "", "frames": 0,
           "started": None, "elapsed": None}   # idle|running|done|error
 render_lock = threading.Lock()
 VIDEO_PATH = TIMELAPSE_DIR / "timelapse.mp4"
+GROWTH_SCRIPT = Path(__file__).with_name("growth.py")
 
 try:
     pwm = HardwarePWM(pwm_channel=0, hz=PWM_FREQ, chip=0)
@@ -309,6 +310,7 @@ def control_loop():
 def take_photo(cfg, now):
     global capturing
     capturing = True
+    saved = None
     try:
         set_brightness(cfg["capture_brightness"])
         time.sleep(2)  # let light and auto-exposure settle
@@ -330,11 +332,38 @@ def take_photo(cfg, now):
             print(f"capture failed: {r.stderr.decode(errors='replace')[-300:]}")
         else:
             make_thumb(fname)
+            saved = fname
     except Exception as e:
         print(f"capture error: {e}")
     finally:
         capturing = False
         wake.set()  # control loop restores scheduled brightness now
+    return saved
+
+
+def record_growth(path, cfg, now):
+    """Measure per-cell canopy coverage from a just-captured photo and log it.
+    Runs growth.py as a subprocess so OpenCV memory is freed afterwards."""
+    grid = cfg.get("grid") or {}
+    if not grid.get("corners"):
+        return
+    payload = {"corners": grid["corners"],
+               "rows": grid.get("rows", 4), "cols": grid.get("cols", 4)}
+    try:
+        r = subprocess.run([sys.executable, str(GROWTH_SCRIPT), str(path),
+                            json.dumps(payload)],
+                           capture_output=True, timeout=120)
+        out = json.loads((r.stdout or b"{}").decode(errors="replace") or "{}")
+    except Exception as e:
+        print(f"growth analyze error: {e}")
+        return
+    if not out.get("ok"):
+        if out.get("error"):
+            print(f"growth: {out['error']}")
+        return
+    readings = out.get("readings") or {}
+    if readings:
+        db.log_many(list(readings.items()), ts=int(now.timestamp()))
 
 
 def capture_loop():
@@ -357,7 +386,9 @@ def capture_loop():
                    now - last_shot >= timedelta(minutes=cfg["capture_interval_min"]))
             if in_day and due:
                 last_shot = now
-                take_photo(cfg, now)
+                path = take_photo(cfg, now)
+                if path:
+                    record_growth(path, cfg, now)
         time.sleep(15)
 
 
@@ -536,11 +567,12 @@ def update_grid():
             raise ValueError
         names = {str(k): str(v)[:40] for k, v in (data.get("names") or {}).items()}
         show = bool(data.get("show", True))
+        locked = bool(data.get("locked", False))
     except (KeyError, TypeError, ValueError):
         return jsonify(error="Invalid grid data."), 400
     with settings_lock:
         settings["grid"] = {"corners": corners, "rows": rows, "cols": cols,
-                            "names": names, "show": show}
+                            "names": names, "show": show, "locked": locked}
         CONFIG_PATH.write_text(json.dumps(settings, indent=2))
     return jsonify(ok=True)
 

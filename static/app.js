@@ -250,6 +250,16 @@ function sensorMeta(key, val){
     const nm=(grid&&grid.names&&grid.names[cell])?grid.names[cell]:cell;
     return {group:'Moisture', label:nm, value:val.toFixed(0), unit:'%'};
   }
+  if(key.startsWith('growth_px:')){
+    const cell=key.slice(10);
+    const nm=(grid&&grid.names&&grid.names[cell])?grid.names[cell]:cell;
+    return {group:'Growth', label:nm+' area', value:Math.round(val).toLocaleString(), unit:'px'};
+  }
+  if(key.startsWith('growth:')){
+    const cell=key.slice(7);
+    const nm=(grid&&grid.names&&grid.names[cell])?grid.names[cell]:cell;
+    return {group:'Growth', label:nm, value:val.toFixed(1), unit:'%'};
+  }
   return {group:'Other', label:key, value:String(val), unit:''};
 }
 function renderSensors(j){
@@ -262,10 +272,11 @@ function renderSensors(j){
   // grouped readout
   const groups={};
   for(const k of keys){
+    if(k.startsWith('growth_px:'))continue;   // raw counts are chart-only
     const m=sensorMeta(k, sensorData[k].value);
     (groups[m.group]=groups[m.group]||[]).push(m);
   }
-  const order=['Environment','Soil temp','Moisture','Other'];
+  const order=['Environment','Soil temp','Moisture','Growth','Other'];
   let h='';
   for(const g of order){
     if(!groups[g])continue;
@@ -369,6 +380,7 @@ function bil(C,u,v){
 function esc(s){return (s||'').replace(/[<>&]/g,'');}
 function moistColor(p){const h=35+(210-35)*(Math.max(0,Math.min(100,p))/100);
   return `hsla(${h.toFixed(0)},60%,50%,0.28)`;}
+function gridEditable(){return canEdit && grid && !grid.locked;}
 function drawGrid(){
   const svg=document.getElementById('gridsvg');
   if(!grid||!svg)return;
@@ -384,12 +396,15 @@ function drawGrid(){
     const fill=mo?moistColor(mo.value):'rgba(127,176,105,0.12)';
     h+=`<polygon class="gc" data-k="${k}" points="${pts}" fill="${fill}" stroke="#eafff0" stroke-width="2"/>`;
     const ctr=bil(C,(c+0.5)/K,(r+0.5)/R);
-    h+=`<text x="${(ctr[0]*S).toFixed(1)}" y="${(ctr[1]*S-3).toFixed(1)}" class="glbl" text-anchor="middle">${k}</text>`;
+    const cx=(ctr[0]*S).toFixed(1); let yy=ctr[1]*S-3;
+    h+=`<text x="${cx}" y="${yy.toFixed(1)}" class="glbl" text-anchor="middle">${k}</text>`;
     const nm=grid.names[k];
-    if(nm)h+=`<text x="${(ctr[0]*S).toFixed(1)}" y="${(ctr[1]*S+19).toFixed(1)}" class="gnm" text-anchor="middle">${esc(nm)}</text>`;
-    if(mo)h+=`<text x="${(ctr[0]*S).toFixed(1)}" y="${(ctr[1]*S+(nm?40:19)).toFixed(1)}" class="gmoist" text-anchor="middle">${mo.value.toFixed(0)}%</text>`;
+    if(nm){yy+=22;h+=`<text x="${cx}" y="${yy.toFixed(1)}" class="gnm" text-anchor="middle">${esc(nm)}</text>`;}
+    if(mo){yy+=21;h+=`<text x="${cx}" y="${yy.toFixed(1)}" class="gmoist" text-anchor="middle">${mo.value.toFixed(0)}%</text>`;}
+    const gr=sensorData['growth:'+k];
+    if(gr){yy+=21;h+=`<text x="${cx}" y="${yy.toFixed(1)}" class="ggrow" text-anchor="middle">\u{1F331} ${gr.value.toFixed(0)}%</text>`;}
   }
-  if(canEdit)for(let i=0;i<4;i++)
+  if(gridEditable())for(let i=0;i<4;i++)
     h+=`<circle class="gh" data-i="${i}" cx="${(C[i][0]*S).toFixed(1)}" cy="${(C[i][1]*S).toFixed(1)}" r="16"/>`;
   svg.innerHTML=h;
 }
@@ -403,6 +418,7 @@ async function saveGrid(){
     body:JSON.stringify(grid)});}catch(e){}
 }
 async function detectGrid(){
+  if(!gridEditable())return;
   const info=document.getElementById('gridinfo');info.textContent='Detecting...';
   try{
     const r=await fetch('/api/detect_grid',{method:'POST'});const j=await r.json();
@@ -417,11 +433,12 @@ function syncGridControls(){
   document.getElementById('gridshow').checked=!!grid.show;
   document.getElementById('gridrows').value=grid.rows;
   document.getElementById('gridcols').value=grid.cols;
+  applyGridLock();
 }
 function initGridSvg(){
   const svg=document.getElementById('gridsvg');
   svg.addEventListener('pointerdown',e=>{
-    if(!canEdit)return;
+    if(!gridEditable())return;
     if(e.target.classList.contains('gh')){
       gdrag=+e.target.dataset.i;svg.setPointerCapture(e.pointerId);e.preventDefault();}
   });
@@ -439,16 +456,32 @@ function initGridSvg(){
   document.getElementById('gridshow').addEventListener('change',e=>{
     grid.show=e.target.checked;drawGrid();saveGrid();});
   document.getElementById('detectbtn').addEventListener('click',detectGrid);
-  const upd=()=>{grid.rows=Math.max(1,Math.min(12,+document.getElementById('gridrows').value||4));
+  const upd=()=>{if(!gridEditable()){syncGridControls();return;}
+    grid.rows=Math.max(1,Math.min(12,+document.getElementById('gridrows').value||4));
     grid.cols=Math.max(1,Math.min(12,+document.getElementById('gridcols').value||4));
     drawGrid();saveGrid();};
   document.getElementById('gridrows').addEventListener('change',upd);
   document.getElementById('gridcols').addEventListener('change',upd);
+  const lockBtn=document.getElementById('gridlock');
+  if(lockBtn)lockBtn.addEventListener('click',()=>{
+    if(!grid||!canEdit)return;
+    grid.locked=!grid.locked;
+    applyGridLock();drawGrid();saveGrid();
+  });
+}
+function applyGridLock(){
+  if(!grid)return;
+  const locked=!!grid.locked;
+  document.body.classList.toggle('gridlocked',locked);
+  const btn=document.getElementById('gridlock');
+  if(btn)btn.textContent=locked?'\uD83D\uDD13 Unlock grid':'\uD83D\uDD12 Lock grid';
 }
 function handleGrid(j){
   if(j.settings&&j.settings.grid){
     if(grid===null){grid=j.settings.grid;
-      if(!grid.names)grid.names={};syncGridControls();}
+      if(!grid.names)grid.names={};
+      if(grid.locked===undefined)grid.locked=false;
+      syncGridControls();}
     if(gdrag<0)drawGrid();
   }
 }
@@ -496,7 +529,7 @@ setInterval(()=>{const d=new Date();
   if(S){S.now=d;}},1000);
 setInterval(refresh,15000);
 setInterval(render,60000);
-initAuth();
-initGridSvg();
-initSensors();
+[initAuth, initSensors, initGridSvg].forEach(fn=>{
+  try{ fn(); }catch(e){ console.error(fn.name+' init failed:', e); }
+});
 refresh();

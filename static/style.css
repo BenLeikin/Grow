@@ -167,3 +167,10 @@ body.readonly .editonly{display:none !important}
   animation:sundance 3.8s ease-in-out infinite}
 .raygroup{transform-box:fill-box;transform-origin:center;
   animation:rayspin 28s linear infinite}
+
+/* grid lock: hide geometry editing controls while locked */
+body.gridlocked .gridedit{display:none}
+
+/* per-cell canopy growth label on the snapshot overlay */
+.ggrow{fill:#2e7d32;font:700 17px sans-serif;paint-order:stroke;
+  stroke:#eafff0;stroke-width:3px}
