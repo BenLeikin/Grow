@@ -369,7 +369,7 @@ function initSensors(){
 }
 
 // ---------------- cell grid overlay ----------------
-let grid=null, gdrag=-1;
+let grid=null, gdrag=-1, gridDirty=false;
 function colL(c){return String.fromCharCode(65+c);}
 function cellKey(r,c){return colL(c)+(r+1);}
 function bil(C,u,v){
@@ -414,8 +414,21 @@ function ptFrac(svg,e){
           Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))];
 }
 async function saveGrid(){
-  try{await fetch('/api/grid',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(grid)});}catch(e){}
+  gridDirty=true;                 // pending local edit; block poll-sync until saved
+  const info=document.getElementById('gridinfo');
+  try{
+    const r=await fetch('/api/grid',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(grid)});
+    if(!r.ok){
+      const j=await r.json().catch(()=>({}));
+      if(info)info.textContent = r.status===401
+        ? 'not saved \u2014 log in to edit the grid'
+        : ('grid not saved: '+(j.error||('HTTP '+r.status)));
+      return;                      // stay dirty so a poll won't revert unsaved edits
+    }
+    gridDirty=false;               // saved; tabs may sync again
+    if(info && /not saved|HTTP|log in/.test(info.textContent)) info.textContent='';
+  }catch(e){ if(info)info.textContent='grid not saved (request failed)'; }
 }
 async function detectGrid(){
   if(!gridEditable())return;
@@ -476,12 +489,22 @@ function applyGridLock(){
   const btn=document.getElementById('gridlock');
   if(btn)btn.textContent=locked?'\uD83D\uDD13 Unlock grid':'\uD83D\uDD12 Lock grid';
 }
+function adoptGrid(g){
+  grid=g;
+  if(!grid.names)grid.names={};
+  if(grid.locked===undefined)grid.locked=false;
+  syncGridControls();
+}
 function handleGrid(j){
   if(j.settings&&j.settings.grid){
-    if(grid===null){grid=j.settings.grid;
-      if(!grid.names)grid.names={};
-      if(grid.locked===undefined)grid.locked=false;
-      syncGridControls();}
+    const srv=j.settings.grid;
+    if(grid===null){
+      adoptGrid(srv);
+    } else if(gdrag<0 && !gridDirty && JSON.stringify(srv)!==JSON.stringify(grid)){
+      // another tab/device saved a newer grid; sync to it instead of holding
+      // a stale copy that could later overwrite the saved one
+      adoptGrid(srv);
+    }
     if(gdrag<0)drawGrid();
   }
 }
