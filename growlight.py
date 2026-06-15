@@ -37,6 +37,8 @@ from werkzeug.security import check_password_hash
 import db
 import sensors
 import notify
+import ai_report
+import discord_alert
 
 # ------------------- defaults (overridden by config.json) -------------------
 DEFAULTS = {
@@ -53,6 +55,7 @@ DEFAULTS = {
     "roi": "",                  # crop as "x,y,w,h" fractions, blank = full frame
     "sample_interval_min": 5,   # how often to read + log sensors
     "ntfy_topic": "",           # set to enable push notifications (see notify.py)
+    "discord_webhook": "",      # set to enable Discord alerts (see discord_alert.py)
     "password_hash": "",        # set to enable login (see README); blank = open
     "cookie_secure": True,      # True for HTTPS; set False only for local http testing
     "auto_water": False,        # master switch; keep OFF until moisture calibrated
@@ -60,6 +63,15 @@ DEFAULTS = {
     "pump_max_seconds": 20,     # hard cap on a single dose (anti-flood/dry-run)
     "pump_cooldown_min": 30,    # min wait between auto doses (soil wicks slowly)
     "pump_daily_max_seconds": 180,  # runaway backstop
+    "fill_max_seconds": 60,     # hard cap on a fill-to-float run (if float never trips)
+    "dryness_cal": {},          # per-cell {wet,dry} brightness anchors -> camera moisture %
+    "ai_enabled": False,        # daily Claude vision report (needs an API key, see ai_report.py)
+    "ai_model": "claude-opus-4-8",
+    "ai_report_hour": 8,        # local hour (0-23) to run the daily report
+    "ai_report_minute": 0,      # minute (0-59) within that hour
+    "ai_notify": True,          # push the report summary via ntfy
+    "ai_notes": "Peat/vermiculite/perlite seed starter in a cell tray, bottom-watered. "
+                "Mixed germination: some cells sprouted, some still germinating.",
     "grid": {                   # cell-mapping overlay
         "corners": [[0.12, 0.10], [0.88, 0.10], [0.88, 0.92], [0.12, 0.92]],
         "rows": 4, "cols": 4, "names": {}, "show": True, "locked": False,
@@ -72,6 +84,9 @@ LOOP_SECONDS  = 30
 HTTP_PORT     = 5000
 CONFIG_PATH   = Path(__file__).with_name("config.json")
 TIMELAPSE_DIR = Path(__file__).with_name("timelapse")
+AI_REPORT_PATH = Path(__file__).with_name("ai_report.json")
+report_lock = threading.Lock()
+report_state = {"generating": False}
 TIMEZONES     = sorted(available_timezones())
 THUMB_DIR     = TIMELAPSE_DIR / "thumbs"
 # ----------------------------------------------------------------------------
@@ -235,6 +250,225 @@ def run_pump(seconds, reason="manual", force=False):
     except Exception:
         pass
     return True, f"ran {elapsed:.1f}s"
+
+
+def run_pump_until_full(reason="fill", force=False):
+    """Run the pump until the float reads full, then stop. A hard time cap is
+    the backstop: if the float never trips within fill_max_seconds the pump
+    stops anyway and the run is flagged, because that means the source is empty,
+    the tube is off, or the float failed. Float reading None (sensor lost) is
+    treated as 'stop' (fail-safe). Blocks; call in a thread. Logs the run."""
+    with settings_lock:
+        cap = float(settings.get("fill_max_seconds", 60))
+        daily_cap = float(settings.get("pump_daily_max_seconds", 180))
+    with pump_lock:
+        if not PUMP_HW:
+            return False, "pump hardware not available"
+        if pump_state["running"]:
+            return False, "pump already running"
+        if pump_state["day"] != _today_str():
+            pump_state["day"] = _today_str()
+            pump_state["today_seconds"] = 0.0
+        f0 = sensors.read_float()
+        if f0 is None and not force:
+            return False, "no float sensor; refusing to fill blind"
+        if f0 is not None and f0 < 1:
+            return False, "tray already full"
+        remaining = daily_cap - pump_state["today_seconds"]
+        if not force and remaining <= 0:
+            return False, "daily pump limit reached"
+        run_cap = cap if force else min(cap, remaining)
+        pump_state["running"] = True
+    elapsed = 0.0
+    tripped = False
+    confirm = 0                              # consecutive "full" reads needed
+    CONFIRM_NEEDED = 4                        # ~0.4s steady, rejects slosh/bobble
+    try:
+        _pump.on()
+        t0 = time.time()
+        while True:
+            elapsed = time.time() - t0
+            if elapsed >= run_cap:
+                break                        # cap hit, float never stayed full
+            fv = sensors.read_float()
+            if fv is None or fv < 1:         # full (open) or sensor lost
+                confirm += 1
+                if confirm >= CONFIRM_NEEDED:
+                    tripped = (fv is not None and fv < 1)
+                    break                    # full held steady -> stop
+            else:
+                confirm = 0                  # a not-full read resets the count
+            time.sleep(0.1)                  # poll the float ~10x/sec
+    finally:
+        _pump.off()
+        with pump_lock:
+            pump_state["running"] = False
+            pump_state["last_run"] = time.time()
+            pump_state["today_seconds"] += elapsed
+            detail = (f"{reason}: full at {elapsed:.1f}s" if tripped
+                      else f"{reason}: STOPPED at {elapsed:.1f}s cap, no float trip")
+            pump_state["last_detail"] = detail
+    try:
+        db.log_event("pump", detail)
+    except Exception:
+        pass
+    if tripped:
+        return True, f"filled in {elapsed:.1f}s"
+    return False, f"ran to {elapsed:.1f}s cap without float trip (source empty?)"
+
+
+def _cam_moisture(cell, b, cal):
+    c = cal.get(cell) or {}
+    wet = c.get("wet")
+    if wet is None:
+        return None
+    dry = c.get("dry", wet + 15)
+    if dry <= wet:
+        return None
+    return round(max(0.0, min(100.0, 100.0 * (dry - b) / (dry - wet))))
+
+
+def gather_report_data():
+    """Assemble the controller snapshot the AI report is built from."""
+    with settings_lock:
+        cfg = dict(settings)
+    with state_lock:
+        st = dict(state)
+    tz = ZoneInfo(cfg["timezone"])
+    now = datetime.now(tz)
+    cal = cfg.get("dryness_cal") or {}
+    cam, raw, growth = {}, {}, {}
+    for k, (ts, v) in db.latest().items():
+        if k.startswith("dry:"):
+            cell = k[4:]
+            m = _cam_moisture(cell, v, cal)
+            (cam if m is not None else raw)[cell] = m if m is not None else round(v, 1)
+        elif k.startswith("growth:"):
+            growth[k[7:]] = round(v, 1)
+    fv = sensors.read_float()
+    flabel = "no sensor" if fv is None else ("not full" if fv >= 1 else "full")
+    grid = cfg.get("grid") or {}
+    bright = round(st.get("brightness") or 0)
+    return {
+        "date": now.strftime("%Y-%m-%d %H:%M"),
+        "days_running": None,
+        "location": f"lat {cfg['latitude']}, lon {cfg['longitude']} ({cfg['timezone']})",
+        "light": {"phase": "day" if bright > 0 else "night", "brightness": bright,
+                  "on": st["on"].strftime("%H:%M") if st.get("on") else "?",
+                  "off": st["off"].strftime("%H:%M") if st.get("off") else "?",
+                  "capture_brightness": cfg.get("capture_brightness")},
+        "grid": {"rows": grid.get("rows"), "cols": grid.get("cols"),
+                 "names": grid.get("names") or {}},
+        "camera_moisture": cam, "dryness_raw": raw, "growth": growth,
+        "float": flabel,
+        "pump_today_s": round(pump_state.get("today_seconds", 0.0), 1),
+        "pump_last": pump_state.get("last_detail") or "none",
+        "notes": cfg.get("ai_notes", ""),
+    }
+
+
+def run_report(reason="daily"):
+    """Generate one AI report: gather data + latest photo, call the API, store
+    the result, and push the summary. Serialized via report_lock."""
+    with report_lock:
+        if report_state["generating"]:
+            return {"ok": False, "error": "a report is already being generated"}
+        report_state["generating"] = True
+    try:
+        with settings_lock:
+            cfg = dict(settings)
+        if not ai_report.have_key():
+            return {"ok": False, "error": "no API key on the controller"}
+        photos = sorted(TIMELAPSE_DIR.glob("*.jpg"))
+        photo = photos[-1] if photos else None
+        result = ai_report.generate(photo, gather_report_data(),
+                                    model=cfg.get("ai_model"))
+        result["reason"] = reason
+        try:
+            AI_REPORT_PATH.write_text(json.dumps(result, indent=2))
+        except Exception as e:
+            print(f"report save error: {e}")
+        if result.get("ok") and cfg.get("ai_notify", True):
+            rep = result.get("report") or {}
+            summary = rep.get("summary") or "Daily report ready."
+            health = rep.get("overall_health")
+            tag = {"good": "seedling", "watch": "eyes",
+                   "problem": "warning"}.get(health, "seedling")
+            notify.send("Garden report", summary, tags=tag)
+            # Discord: same summary as a colour-coded embed with key details
+            fields = []
+            g = rep.get("germination") or {}
+            if g.get("sprouted") is not None and g.get("total_cells") is not None:
+                fields.append({"name": "Germination",
+                               "value": f"{g['sprouted']}/{g['total_cells']}",
+                               "inline": True})
+            if rep.get("growth_stage"):
+                fields.append({"name": "Stage", "value": rep["growth_stage"],
+                               "inline": True})
+            if (rep.get("light") or {}).get("assessment"):
+                fields.append({"name": "Light", "value": rep["light"]["assessment"],
+                               "inline": True})
+            if (rep.get("water") or {}).get("assessment"):
+                fields.append({"name": "Water", "value": rep["water"]["assessment"],
+                               "inline": True})
+            recs = rep.get("recommendations") or []
+            if recs:
+                fields.append({"name": "Recommendations",
+                               "value": "\n".join("\u2022 " + str(r) for r in recs[:4]),
+                               "inline": False})
+            sp = rep.get("species") or []
+            named = [f"{s.get('cell', '?')}: {s.get('guess')}"
+                     + (f" ({s.get('confidence')})" if s.get('confidence') else "")
+                     for s in sp if s.get('guess') and s.get('guess') != 'unsure']
+            if named:
+                fields.append({"name": "Species (guesses)",
+                               "value": "\n".join(named[:10]), "inline": False})
+            discord_alert.send("\U0001F331 Garden report", summary,
+                               level=(health or "info"), fields=fields)
+        try:
+            db.log_event("ai_report",
+                         reason + (": ok" if result.get("ok")
+                                   else ": " + str(result.get("error"))[:80]))
+        except Exception:
+            pass
+        return result
+    finally:
+        with report_lock:
+            report_state["generating"] = False
+
+
+def report_loop():
+    """Run the AI report once a day when the clock crosses ai_report_hour:minute.
+
+    A restart does NOT trigger a report: if the service starts up already past
+    today's scheduled time, today is marked done and the last stored report is
+    kept as-is. New reports come only from crossing the time while running, or
+    from the manual button."""
+    last_day = None
+    primed = False
+    while True:
+        try:
+            with settings_lock:
+                cfg = dict(settings)
+            if cfg.get("ai_enabled") and ai_report.have_key():
+                tz = ZoneInfo(cfg["timezone"])
+                now = datetime.now(tz)
+                target = (int(cfg.get("ai_report_hour", 8)) * 60
+                          + int(cfg.get("ai_report_minute", 0)))
+                nowmin = now.hour * 60 + now.minute
+                if not primed:
+                    # first pass: if we're already past today's time, treat
+                    # today as handled so a restart doesn't fire a fresh report
+                    if nowmin >= target:
+                        last_day = now.date()
+                    primed = True
+                if nowmin >= target and last_day != now.date():
+                    print("running daily AI report")
+                    run_report("daily")
+                    last_day = now.date()
+        except Exception as e:
+            print(f"report_loop error: {e}")
+        time.sleep(60)
 
 
 def watering_loop():
@@ -412,10 +646,19 @@ def render_worker():
             ["ffmpeg", "-loglevel", "error", "-y",
              "-framerate", "24", "-pattern_type", "glob",
              "-i", str(TIMELAPSE_DIR / "*.jpg"),
-             "-vf", "scale=1280:-2",
+             # JPEG stills are full-range (yuvj420p/pc); browsers render that as
+             # black. Remap to limited-range yuv420p and tag it. Height is forced
+             # to a multiple of 16 (-16, not -2): a non-mod16 height makes the
+             # encoder signal a crop that some hardware decoders render as black.
+             "-vf", "scale=1280:-16:in_range=full:out_range=tv",
              "-c:v", "libx264", "-preset", "ultrafast",
              "-crf", "24", "-threads", "1",
-             "-pix_fmt", "yuv420p",
+             "-pix_fmt", "yuv420p", "-color_range", "tv",
+             # Fully specify the colour metadata (BT.601, matching the JPEG
+             # source). An unspecified matrix makes some hardware decoders
+             # (VLC's, browsers') render the video as black.
+             "-colorspace", "smpte170m", "-color_primaries", "smpte170m",
+             "-color_trc", "smpte170m",
              str(tmp)],
             capture_output=True, timeout=3600)
         # Faststart as a stream-copy remux: no re-encode, trivial memory.
@@ -501,6 +744,78 @@ def require_auth(fn):
     return wrapper
 
 
+@app.route("/api/dryness_cal", methods=["POST"])
+@require_auth
+def dryness_cal_set():
+    """Capture the current per-cell camera brightness as the 'wet' (100%) or
+    'dry' (0%) anchor, so the dashboard can show a camera-moisture percentage."""
+    data = request.get_json(silent=True) or {}
+    point = data.get("point")
+    if point not in ("wet", "dry"):
+        return jsonify(ok=False, error="point must be 'wet' or 'dry'"), 200
+    cells = {k[4:]: v for k, (ts, v) in db.latest().items() if k.startswith("dry:")}
+    if not cells:
+        return jsonify(ok=False, error="no camera readings yet; wait for a capture"), 200
+    with settings_lock:
+        cal = settings.setdefault("dryness_cal", {})
+        for cell, v in cells.items():
+            cal.setdefault(cell, {})[point] = v
+        CONFIG_PATH.write_text(json.dumps(settings, indent=2))
+    return jsonify(ok=True, point=point, cells=len(cells))
+
+
+@app.route("/api/report")
+def api_report_get():
+    """Latest stored AI report (or nulls if none yet), plus generating flag."""
+    try:
+        data = json.loads(AI_REPORT_PATH.read_text())
+    except Exception:
+        data = {"ok": None, "report": None, "ts": None}
+    data["generating"] = report_state["generating"]
+    data["have_key"] = ai_report.have_key()
+    return jsonify(data)
+
+
+@app.route("/api/ai_settings", methods=["POST"])
+@require_auth
+def update_ai_settings():
+    data = request.get_json(silent=True) or {}
+    with settings_lock:
+        if "ai_enabled" in data:
+            settings["ai_enabled"] = bool(data["ai_enabled"])
+        if "ai_notify" in data:
+            settings["ai_notify"] = bool(data["ai_notify"])
+        if "ai_report_hour" in data:
+            try:
+                settings["ai_report_hour"] = max(0, min(23, int(data["ai_report_hour"])))
+            except (TypeError, ValueError):
+                pass
+        if "ai_report_minute" in data:
+            try:
+                settings["ai_report_minute"] = max(0, min(59, int(data["ai_report_minute"])))
+            except (TypeError, ValueError):
+                pass
+        if "ai_notes" in data:
+            settings["ai_notes"] = str(data["ai_notes"])[:1000]
+        CONFIG_PATH.write_text(json.dumps(settings, indent=2))
+        out = {k: settings[k] for k in
+               ("ai_enabled", "ai_notify", "ai_report_hour", "ai_report_minute", "ai_notes")}
+    return jsonify(ok=True, **out)
+
+
+@app.route("/api/report", methods=["POST"])
+@require_auth
+def api_report_run():
+    if not ai_report.have_key():
+        return jsonify(ok=False, error="no API key set on the controller"), 200
+    return jsonify(run_report("manual"))
+
+
+@app.route("/api/float")
+def api_float():
+    return jsonify(float=sensors.read_float())
+
+
 @app.route("/api/login", methods=["POST"])
 def login():
     with settings_lock:
@@ -571,9 +886,32 @@ def update_grid():
     except (KeyError, TypeError, ValueError):
         return jsonify(error="Invalid grid data."), 400
     with settings_lock:
+        cur = settings.get("grid") or {}
+        cur_locked = bool(cur.get("locked", False))
+        # Server-side lock: while locked, the geometry cannot be changed. A
+        # stale tab or stray save can't move a locked grid; you must unlock
+        # first (which leaves the geometry untouched).
+        if cur_locked:
+            def _same(a, b):
+                try:
+                    return all(abs(p[i] - q[i]) < 1e-9
+                               for p, q in zip(a, b) for i in (0, 1))
+                except Exception:
+                    return False
+            geom_changed = (not _same(corners, cur.get("corners", [])) or
+                            rows != cur.get("rows") or cols != cur.get("cols"))
+            if geom_changed:
+                return jsonify(error="grid is locked; unlock before editing"), 409
         settings["grid"] = {"corners": corners, "rows": rows, "cols": cols,
                             "names": names, "show": show, "locked": locked}
         CONFIG_PATH.write_text(json.dumps(settings, indent=2))
+    # audit trail so a future revert can be traced to who/when/what
+    try:
+        db.log_event("grid", f"saved corners[0]={corners[0]} "
+                             f"rows={rows} cols={cols} locked={locked}")
+    except Exception:
+        pass
+    print(f"grid saved: corners[0]={corners[0]} rows={rows} cols={cols} locked={locked}")
     return jsonify(ok=True)
 
 
@@ -640,7 +978,6 @@ def status():
         settings=cfg,
         sensors={k: {"ts": ts, "value": v}
                  for k, (ts, v) in db.latest().items()},
-        sensor_stub=sensors.stub_mode(),
         authed=is_authed(),
         auth_enabled=auth_enabled(),
         water={
@@ -665,9 +1002,13 @@ def pump_test():
     except (TypeError, ValueError):
         secs = 3.0
     force = bool(data.get("force", False))
+    if data.get("until_full"):
+        threading.Thread(target=lambda: run_pump_until_full("fill", force),
+                         daemon=True).start()
+        return jsonify(ok=True, started=True, mode="fill")
     threading.Thread(target=lambda: run_pump(secs, "manual", force),
                      daemon=True).start()
-    return jsonify(ok=True, started=True)
+    return jsonify(ok=True, started=True, mode="timed")
 
 
 @app.route("/api/series")
@@ -746,5 +1087,6 @@ if __name__ == "__main__":
     threading.Thread(target=capture_loop, daemon=True).start()
     threading.Thread(target=sample_loop, daemon=True).start()
     threading.Thread(target=watering_loop, daemon=True).start()
+    threading.Thread(target=report_loop, daemon=True).start()
     print(f"Dashboard at http://0.0.0.0:{HTTP_PORT}")
     app.run(host="0.0.0.0", port=HTTP_PORT, threaded=True)

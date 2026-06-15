@@ -44,22 +44,83 @@ function draw(){
     <text x="${L}" y="${y(100)-4}" font-size="11" fill="#3f7d45">${S.max}%</text>`;
 }
 
+// ---- lighting-stage graphics: graphic follows the actual phase ----
+const BULB={
+  day:'<svg viewBox="0 0 100 100" class="sunsvg"><g class="raygroup"><path d="M61.0 32.0 Q50.0 3.0 50.0 3.0 L39.0 32.0 Z"/><path d="M68.5 39.9 Q73.5 9.3 73.5 9.3 L49.5 28.9 Z"/><path d="M71.1 50.5 Q90.7 26.5 90.7 26.5 L60.1 31.5 Z"/><path d="M68.0 61.0 Q97.0 50.0 97.0 50.0 L68.0 39.0 Z"/><path d="M60.1 68.5 Q90.7 73.5 90.7 73.5 L71.1 49.5 Z"/><path d="M49.5 71.1 Q73.5 90.7 73.5 90.7 L68.5 60.1 Z"/><path d="M39.0 68.0 Q50.0 97.0 50.0 97.0 L61.0 68.0 Z"/><path d="M31.5 60.1 Q26.5 90.7 26.5 90.7 L50.5 71.1 Z"/><path d="M28.9 49.5 Q9.3 73.5 9.3 73.5 L39.9 68.5 Z"/><path d="M32.0 39.0 Q3.0 50.0 3.0 50.0 L32.0 61.0 Z"/><path d="M39.9 31.5 Q9.3 26.5 9.3 26.5 L28.9 50.5 Z"/><path d="M50.5 28.9 Q26.5 9.3 26.5 9.3 L31.5 39.9 Z"/></g>'
+     +'<circle class="sundisk" cx="50" cy="50" r="23"/>'
+     +'<g class="face"><circle cx="43" cy="48" r="3"/><circle cx="57" cy="48" r="3"/>'
+     +'<path d="M44 55 Q50 61 56 55" fill="none" stroke-width="2.6" stroke-linecap="round"/></g></svg>',
+  rise:'<svg viewBox="0 0 100 100" class="risesvg"><g class="rays rerays">'
+     +'<line x1="50" y1="28" x2="50" y2="14"/><line x1="34" y1="34" x2="26" y2="23"/>'
+     +'<line x1="66" y1="34" x2="74" y2="23"/><line x1="28" y1="46" x2="14" y2="41"/>'
+     +'<line x1="72" y1="46" x2="86" y2="41"/></g>'
+     +'<circle class="redisk" cx="50" cy="50" r="17"/>'
+     +'<g class="reface"><circle cx="44" cy="48" r="2.5"/><circle cx="56" cy="48" r="2.5"/>'
+     +'<path d="M45 55 Q50 60 55 55" fill="none" stroke-width="2.4" stroke-linecap="round"/></g>'
+     +'<line class="horizon" x1="8" y1="73" x2="92" y2="73"/></svg>',
+  set:'<svg viewBox="0 0 100 100" class="setsvg"><g class="rays serays">'
+     +'<line x1="50" y1="30" x2="50" y2="18"/><line x1="35" y1="36" x2="28" y2="26"/>'
+     +'<line x1="65" y1="36" x2="72" y2="26"/><line x1="29" y1="48" x2="16" y2="44"/>'
+     +'<line x1="71" y1="48" x2="84" y2="44"/></g>'
+     +'<circle class="sedisk" cx="50" cy="54" r="17"/>'
+     +'<g class="seface"><circle cx="44" cy="52" r="2.5"/><circle cx="56" cy="52" r="2.5"/>'
+     +'<path d="M45 59 Q50 63 55 59" fill="none" stroke-width="2.4" stroke-linecap="round"/></g>'
+     +'<line class="horizon" x1="8" y1="73" x2="92" y2="73"/></svg>'
+};
+function moonPhase(date){
+  // illuminated fraction (0 new .. 1 full) and waxing flag, from the synodic month
+  const synodic=29.530588853;
+  const knownNew=Date.UTC(2000,0,6,18,14,0)/86400000;  // a reference new moon (days)
+  const days=date.getTime()/86400000;
+  let age=((days-knownNew)%synodic+synodic)%synodic;
+  return {fraction:(1-Math.cos(2*Math.PI*age/synodic))/2, waxing:age<synodic/2, age};
+}
+function litMoonPath(cx,cy,R,f,waxing){
+  if(f<=0.005)return '';                                   // new moon: nothing lit
+  if(f>=0.995)return `M ${cx} ${cy-R} A ${R} ${R} 0 1 1 ${cx} ${cy+R} A ${R} ${R} 0 1 1 ${cx} ${cy-R} Z`;
+  const rx=(R*Math.abs(2*f-1)).toFixed(2);
+  const litRight=waxing, gibbous=f>0.5;
+  const outer=litRight?1:0;
+  const bulgeRight=litRight?!gibbous:gibbous;              // crescent bulges to lit side; gibbous to dark
+  const inner=bulgeRight?0:1;
+  return `M ${cx} ${cy-R} A ${R} ${R} 0 0 ${outer} ${cx} ${cy+R} A ${rx} ${R} 0 0 ${inner} ${cx} ${cy-R} Z`;
+}
+function moonSvg(){
+  const {fraction,waxing}=moonPhase(new Date());
+  const cx=50,cy=48,R=30, lit=litMoonPath(cx,cy,R,fraction,waxing);
+  return '<svg viewBox="0 0 100 100" class="moonsvg">'
+    +`<circle class="moondark" cx="${cx}" cy="${cy}" r="${R}"/>`
+    +(lit?`<path class="moonlit" d="${lit}"/>`:'')
+    +'<path class="star" d="M84 20 l1.5 3.4 3.4 1.5 -3.4 1.5 -1.5 3.4 -1.5 -3.4 -3.4 -1.5 3.4 -1.5 z"/>'
+    +'<circle class="star" cx="77" cy="38" r="1.6"/>'
+    +'<circle class="star" cx="86" cy="56" r="1.4"/></svg>';
+}
+
+function setBulb(stage){
+  const el=document.getElementById('bulb');
+  if(!el||el.dataset.stage===stage)return;   // only swap on change (keeps animation steady)
+  el.dataset.stage=stage;
+  el.className='sun is-'+stage;
+  el.innerHTML=stage==='night'?moonSvg():(BULB[stage]||BULB.day);
+}
+
 function phaseOf(){
   const on=mins(S.on),off=mins(S.off),now=mins(S.now);
-  if(now<on)return['Night','Lights come on at '+fmt(S.on)];
-  if(now<on+S.ramp)return['Morning ramp','Full brightness at '+fmt(new Date(S.on.getTime()+S.ramp*60000))];
-  if(now<off-S.ramp)return['Full light','Evening ramp begins at '+fmt(new Date(S.off.getTime()-S.ramp*60000))];
-  if(now<off)return['Evening ramp','Lights off at '+fmt(S.off)];
-  return['Night','Lights come on tomorrow around '+fmt(S.on)];
+  if(now<on)return['Night','Lights come on at '+fmt(S.on),'night'];
+  if(now<on+S.ramp)return['Morning ramp','Full brightness at '+fmt(new Date(S.on.getTime()+S.ramp*60000)),'rise'];
+  if(now<off-S.ramp)return['Full light','Evening ramp begins at '+fmt(new Date(S.off.getTime()-S.ramp*60000)),'day'];
+  if(now<off)return['Evening ramp','Lights off at '+fmt(S.off),'set'];
+  return['Night','Lights come on tomorrow around '+fmt(S.on),'night'];
 }
 
 function render(){
   if(!S)return;
   document.getElementById('pct').textContent=Math.round(S.brightness)+'%';
   document.getElementById('bulb').style.setProperty('--glow',S.brightness/100);
-  const[p,n]=phaseOf();
+  const[p,n,stage]=phaseOf();
   document.getElementById('phase').textContent=p;
   document.getElementById('next').textContent=n;
+  setBulb(stage);
   const dayLen=(S.off-S.on)/60000;
   document.getElementById('facts').innerHTML=`
     <dt>&#127774; Sunrise</dt><dd>${fmt(S.sunrise)}</dd>
@@ -234,7 +295,16 @@ function initAuth(){
 }
 
 // ---------------- sensors: readout, chart, overlay ----------------
-let sensorData={}, sensorStub=false;
+let sensorData={};
+let dryCal={};                 // per-cell {wet,dry} brightness anchors
+const DRY_SPAN_DEFAULT=15;     // provisional wet->dry brightness span pre-calibration
+function camMoisture(cell, b){
+  const c=dryCal[cell];
+  if(!c || c.wet==null) return null;          // not calibrated -> no %
+  const wet=c.wet, dry=(c.dry!=null?c.dry:wet+DRY_SPAN_DEFAULT);
+  if(dry<=wet) return null;
+  return Math.max(0, Math.min(100, 100*(dry-b)/(dry-wet)));
+}
 let chartSensor=null, chartHours=168;
 
 function c2f(c){return c*9/5+32;}
@@ -260,23 +330,34 @@ function sensorMeta(key, val){
     const nm=(grid&&grid.names&&grid.names[cell])?grid.names[cell]:cell;
     return {group:'Growth', label:nm, value:val.toFixed(1), unit:'%'};
   }
+  if(key.startsWith('dry:')){
+    const cell=key.slice(4);
+    const nm=(grid&&grid.names&&grid.names[cell])?grid.names[cell]:cell;
+    const m=camMoisture(cell, val);
+    if(m!=null) return {group:'Moisture (cam)', label:nm, value:m.toFixed(0), unit:'%'};
+    // uncalibrated: show raw surface-brightness index (higher = drier)
+    return {group:'Dryness', label:nm, value:val.toFixed(0), unit:''};
+  }
   return {group:'Other', label:key, value:String(val), unit:''};
 }
 function renderSensors(j){
   sensorData=j.sensors||{};
-  sensorStub=!!j.sensor_stub;
+  dryCal=(j.settings&&j.settings.dryness_cal)||{};
   const card=document.getElementById('sensorcard');
   const keys=Object.keys(sensorData);
   card.style.display=keys.length?'':'none';
-  document.getElementById('stubbanner').style.display=sensorStub?'':'none';
   // grouped readout
   const groups={};
   for(const k of keys){
     if(k.startsWith('growth_px:'))continue;   // raw counts are chart-only
-    const m=sensorMeta(k, sensorData[k].value);
+    if(k==='float:tray')continue;             // shown in the water controls instead
+    const v=sensorData[k].value;
+    const missing = v==null || (typeof v==='number'&&isNaN(v));
+    const m=sensorMeta(k, missing?0:v);
+    if(missing)m.value='-';                    // no reading -> dash
     (groups[m.group]=groups[m.group]||[]).push(m);
   }
-  const order=['Environment','Soil temp','Moisture','Growth','Other'];
+  const order=['Environment','Soil temp','Moisture','Moisture (cam)','Growth','Dryness','Other'];
   let h='';
   for(const g of order){
     if(!groups[g])continue;
@@ -286,18 +367,21 @@ function renderSensors(j){
     h+='</div>';
   }
   document.getElementById('sreadout').innerHTML=h;
-  // chart sensor dropdown (preserve selection)
+  const dc=document.getElementById('drycal');
+  if(dc)dc.style.display = keys.some(k=>k.startsWith('dry:')) ? '' : 'none';
+  // chart sensor dropdown (preserve selection); raw float not chart-worthy
   const sel=document.getElementById('chartsensor');
-  const want=keys.sort().join(',');
+  const ckeys=keys.filter(k=>k!=='float:tray').sort();
+  const want=ckeys.join(',');
   if(sel.dataset.keys!==want){
     sel.dataset.keys=want;
     const cur=sel.value;
-    sel.innerHTML=keys.map(k=>{const m=sensorMeta(k,0);
+    sel.innerHTML=ckeys.map(k=>{const m=sensorMeta(k,0);
       return `<option value="${k}">${m.group}: ${m.label}</option>`;}).join('');
-    if(keys.includes(cur))sel.value=cur;
-    else{chartSensor=keys.find(k=>k.startsWith('moisture:'))||keys[0];sel.value=chartSensor;loadChart();}
+    if(ckeys.includes(cur))sel.value=cur;
+    else if(ckeys.length){chartSensor=ckeys.find(k=>k.startsWith('dry:'))||ckeys.find(k=>k.startsWith('moisture:'))||ckeys[0];sel.value=chartSensor;loadChart();}
   }
-  if(grid)drawGrid();   // refresh per-cell moisture overlay
+  if(grid)drawGrid();   // refresh per-cell overlay
 }
 async function loadChart(){
   if(!chartSensor)return;
@@ -307,46 +391,133 @@ async function loadChart(){
     const j=await r.json();drawChart(j.points||[]);info.textContent='';
   }catch(e){info.textContent='chart unavailable';}
 }
+let chartPlot=null;
+function chartUnit(){
+  const s=chartSensor||'';
+  if(s.startsWith('temp:'))return '\u00b0F';
+  if(s.startsWith('humidity')||s.startsWith('moisture:')||s.startsWith('growth:'))return '%';
+  if(s.startsWith('dry:')){const c=dryCal[s.slice(4)];return (c&&c.wet!=null)?'%':'';}
+  if(s.startsWith('lux'))return 'lx';
+  return '';
+}
 function drawChart(pts){
-  const svg=document.getElementById('histchart'),W=720,H=240,P=34;
+  const svg=document.getElementById('histchart'),W=720,H=240,P=40;
   const toF=chartSensor&&chartSensor.startsWith('temp:');
-  const data=pts.map(([t,v])=>[t, toF?c2f(v):v]);
-  if(data.length<2){svg.innerHTML=`<text x="${W/2}" y="${H/2}" text-anchor="middle" fill="#7a8a72" font-size="15">Not enough data yet</text>`;return;}
+  // camera dryness charts as moisture % when that cell is calibrated
+  const camCell=(chartSensor&&chartSensor.startsWith('dry:'))?chartSensor.slice(4):null;
+  const isCam=camCell&&dryCal[camCell]&&dryCal[camCell].wet!=null;
+  const conv=v=>toF?c2f(v):(isCam?camMoisture(camCell,v):v);
+  const data=pts.map(([t,v])=>[t, conv(v)]).filter(d=>d[1]!=null);
+  if(data.length<2){svg.innerHTML=`<text x="${W/2}" y="${H/2}" text-anchor="middle" fill="#7a8a72" font-size="15">Not enough data yet</text>`;chartPlot=null;return;}
   const xs=data.map(d=>d[0]),ys=data.map(d=>d[1]);
   const x0=Math.min(...xs),x1=Math.max(...xs);
   let y0=Math.min(...ys),y1=Math.max(...ys);if(y0===y1){y0-=1;y1+=1;}
-  const sx=t=>P+(t-x0)/(x1-x0)*(W-2*P);
-  const sy=v=>H-P-(v-y0)/(y1-y0)*(H-2*P);
-  const line=data.map(d=>`${sx(d[0]).toFixed(1)},${sy(d[1]).toFixed(1)}`).join(' ');
+  const padY=(y1-y0)*0.08; y0-=padY; y1+=padY;
+  const sx=t=>P+(t-x0)/((x1-x0)||1)*(W-2*P);
+  const sy=v=>H-P-(v-y0)/((y1-y0)||1)*(H-2*P);
   const fmtT=t=>{const d=new Date(t*1000);
     return chartHours<=24?d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})
                          :d.toLocaleDateString([],{month:'numeric',day:'numeric'});};
+  const unit=chartUnit(), dec=(unit==='%')?0:1;
   let h='';
+  // horizontal gridlines + y labels (5)
+  for(let i=0;i<=4;i++){
+    const v=y0+(y1-y0)*i/4, yy=sy(v);
+    h+=`<line x1="${P}" y1="${yy.toFixed(1)}" x2="${W-P}" y2="${yy.toFixed(1)}" stroke="#e6f0de"/>`;
+    h+=`<text x="${P-7}" y="${(yy+4).toFixed(1)}" text-anchor="end" font-size="12" fill="#7a8a72">${v.toFixed(dec)}${unit}</text>`;
+  }
+  // x ticks + labels (4)
+  for(let i=0;i<=3;i++){
+    const t=x0+(x1-x0)*i/3, xx=sx(t);
+    h+=`<line x1="${xx.toFixed(1)}" y1="${H-P}" x2="${xx.toFixed(1)}" y2="${H-P+4}" stroke="#cdddc0"/>`;
+    const a=i===0?'start':(i===3?'end':'middle');
+    h+=`<text x="${xx.toFixed(1)}" y="${H-P+18}" text-anchor="${a}" font-size="12" fill="#7a8a72">${fmtT(t)}</text>`;
+  }
   h+=`<line x1="${P}" y1="${H-P}" x2="${W-P}" y2="${H-P}" stroke="#cdddc0"/>`;
   h+=`<line x1="${P}" y1="${P}" x2="${P}" y2="${H-P}" stroke="#cdddc0"/>`;
+  const line=data.map(d=>`${sx(d[0]).toFixed(1)},${sy(d[1]).toFixed(1)}`).join(' ');
   h+=`<polyline fill="none" stroke="#4a7c59" stroke-width="2.5" points="${line}"/>`;
-  h+=`<text x="${P-6}" y="${sy(y1)+4}" text-anchor="end" font-size="12" fill="#7a8a72">${y1.toFixed(0)}</text>`;
-  h+=`<text x="${P-6}" y="${sy(y0)+4}" text-anchor="end" font-size="12" fill="#7a8a72">${y0.toFixed(0)}</text>`;
-  h+=`<text x="${P}" y="${H-P+18}" font-size="12" fill="#7a8a72">${fmtT(x0)}</text>`;
-  h+=`<text x="${W-P}" y="${H-P+18}" text-anchor="end" font-size="12" fill="#7a8a72">${fmtT(x1)}</text>`;
+  // hover marker (hidden until mousemove)
+  h+=`<line id="hvl" y1="${P}" y2="${H-P}" stroke="#4a7c59" stroke-width="1" stroke-dasharray="3 3" style="display:none"/>`;
+  h+=`<circle id="hdot" r="4" fill="#2e7d32" stroke="#fff" stroke-width="1.5" style="display:none"/>`;
   svg.innerHTML=h;
+  chartPlot={unit,dec,
+    pts:data.map(d=>({x:sx(d[0]),y:sy(d[1]),v:d[1],t:d[0]})),
+    fmt:t=>new Date(t*1000).toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})};
+}
+function chartMove(e){
+  if(!chartPlot)return;
+  const svg=document.getElementById('histchart'), ctm=svg.getScreenCTM&&svg.getScreenCTM();
+  if(!ctm)return;
+  const sp=svg.createSVGPoint(); sp.x=e.clientX; sp.y=e.clientY;
+  const loc=sp.matrixTransform(ctm.inverse());
+  let best=null,bd=1e9;
+  for(const p of chartPlot.pts){const d=Math.abs(p.x-loc.x);if(d<bd){bd=d;best=p;}}
+  if(!best)return;
+  const vl=document.getElementById('hvl'),dot=document.getElementById('hdot'),tip=document.getElementById('charttip');
+  if(vl){vl.setAttribute('x1',best.x);vl.setAttribute('x2',best.x);vl.style.display='';}
+  if(dot){dot.setAttribute('cx',best.x);dot.setAttribute('cy',best.y);dot.style.display='';}
+  if(tip){
+    tip.textContent=`${best.v.toFixed(chartPlot.dec)}${chartPlot.unit} \u00b7 ${chartPlot.fmt(best.t)}`;
+    tip.style.display='';tip.style.left=(e.clientX+12)+'px';tip.style.top=(e.clientY-32)+'px';
+  }
+}
+function chartLeave(){
+  ['hvl','hdot','charttip'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='none';});
+}
+function floatLabel(v){
+  return v===null ? 'no sensor' : (v>=1 ? 'not full' : 'full');
+}
+async function pollFloat(){
+  try{
+    const r=await fetch('/api/float');
+    if(!r.ok)return;
+    const j=await r.json();
+    const fs=document.getElementById('floatstate');
+    if(fs)fs.textContent=floatLabel(j.float);
+  }catch(e){}
 }
 function renderWater(j){
   const w=j.water;const box=document.getElementById('waterctl');
   if(!w){box.style.display='none';return;}
   box.style.display='';
-  const fs=document.getElementById('floatstate');
-  fs.textContent = w.float===null ? 'no sensor'
-                 : (w.float>=1 ? 'closed' : 'open');
+  document.getElementById('floatstate').textContent = floatLabel(w.float);
   document.getElementById('pumptoday').textContent=w.today_seconds;
   const btn=document.getElementById('pumpbtn');
-  btn.disabled = !w.pump_hw || w.pump_running;
+  const fbtn=document.getElementById('fillbtn');
+  const busy = !w.pump_hw || w.pump_running;
+  btn.disabled = busy;
+  if(fbtn)fbtn.disabled = busy;
   btn.textContent = w.pump_running ? 'Pumping...' : 'Test pump';
+  if(fbtn)fbtn.textContent = w.pump_running ? 'Filling...' : 'Fill to float';
   if(!w.pump_hw)document.getElementById('pumpinfo').textContent='no pump hardware';
   else if(w.pump_last && !w.pump_running)
     document.getElementById('pumpinfo').textContent='last: '+w.pump_last;
 }
+async function calibrate(point){
+  const info=document.getElementById('calinfo');info.textContent='saving...';
+  try{
+    const r=await fetch('/api/dryness_cal',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({point})});
+    const j=await r.json().catch(()=>({}));
+    if(r.ok&&j.ok){info.textContent=`${point} set (${j.cells} cells)`;refresh();}
+    else info.textContent = r.status===401?'log in to calibrate'
+                          :('failed: '+(j.error||('HTTP '+r.status)));
+  }catch(e){info.textContent='calibration failed';}
+}
 function initSensors(){
+  const fb=document.getElementById('fillbtn');
+  if(fb)fb.addEventListener('click',async()=>{
+    const info=document.getElementById('pumpinfo');info.textContent='filling...';
+    try{
+      const r=await fetch('/api/pump',{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({until_full:true})});
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok)info.textContent = r.status===401 ? 'log in to run the pump'
+              : ('fill failed: '+(j.error||('HTTP '+r.status)));
+      // success/result shows via the status poll (pump_last) + live float
+    }catch(e){info.textContent='fill request failed';}
+  });
   const pb=document.getElementById('pumpbtn');
   if(pb)pb.addEventListener('click',async()=>{
     const secs=+document.getElementById('pumpsecs').value||3;
@@ -358,6 +529,12 @@ function initSensors(){
       if(!j.ok)document.getElementById('pumpinfo').textContent=j.error||'failed';
     }catch(e){document.getElementById('pumpinfo').textContent='request failed';}
   });
+  const cw=document.getElementById('calwet');
+  if(cw)cw.addEventListener('click',()=>calibrate('wet'));
+  const cd=document.getElementById('caldry');
+  if(cd)cd.addEventListener('click',()=>calibrate('dry'));
+  const hc=document.getElementById('histchart');
+  if(hc){hc.addEventListener('mousemove',chartMove);hc.addEventListener('mouseleave',chartLeave);}
   document.getElementById('chartsensor').addEventListener('change',e=>{
     chartSensor=e.target.value;loadChart();});
   document.querySelectorAll('#ranges button').forEach(b=>{
@@ -403,6 +580,9 @@ function drawGrid(){
     if(mo){yy+=21;h+=`<text x="${cx}" y="${yy.toFixed(1)}" class="gmoist" text-anchor="middle">${mo.value.toFixed(0)}%</text>`;}
     const gr=sensorData['growth:'+k];
     if(gr){yy+=21;h+=`<text x="${cx}" y="${yy.toFixed(1)}" class="ggrow" text-anchor="middle">\u{1F331} ${gr.value.toFixed(0)}%</text>`;}
+    const dr=sensorData['dry:'+k];
+    if(dr){const dm=camMoisture(k,dr.value);yy+=21;
+      h+=`<text x="${cx}" y="${yy.toFixed(1)}" class="gdry" text-anchor="middle">\u{1F4A7} ${dm!=null?dm.toFixed(0)+'%':dr.value.toFixed(0)}</text>`;}
   }
   if(gridEditable())for(let i=0;i<4;i++)
     h+=`<circle class="gh" data-i="${i}" cx="${(C[i][0]*S).toFixed(1)}" cy="${(C[i][1]*S).toFixed(1)}" r="16"/>`;
@@ -519,6 +699,10 @@ async function refresh(){
     renderVideoState(j);
     loadFrames();
     applyAuth(j);
+    setAiControls(j.settings);
+    {const rc=document.getElementById('reportctl');if(rc)rc.style.display=canEdit?'':'none';}
+    fetchReport();
+    requestAnimationFrame(fitReportHeight);
     handleGrid(j);
     renderSensors(j);
     renderWater(j);
@@ -550,9 +734,119 @@ document.getElementById('cfgform').addEventListener('submit',async ev=>{
 setInterval(()=>{const d=new Date();
   document.getElementById('clock').textContent=d.toLocaleTimeString();
   if(S){S.now=d;}},1000);
+// ---------------- AI garden report ----------------
+function rBadge(h){
+  const m={good:['Healthy','rbg-good'],watch:['Watch','rbg-watch'],problem:['Problem','rbg-problem']};
+  const v=m[h]||['\u2014','rbg-watch'];
+  return `<span class="rbadge ${v[1]}">${v[0]}</span>`;
+}
+function rList(title,arr){
+  if(!arr||!arr.length)return '';
+  return `<div class="rsec"><h4>${title}</h4><ul>${arr.map(x=>`<li>${esc(String(x))}</li>`).join('')}</ul></div>`;
+}
+function rAgo(ts){
+  if(!ts)return '';
+  return new Date(ts*1000).toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
+}
+function fitReportHeight(){
+  const card=document.getElementById('reportcard');
+  const media=document.querySelector('.amedia');
+  if(!card||!media)return;
+  if(window.innerWidth<1100){card.style.maxHeight='';return;}  // single column: let it flow
+  const top=card.getBoundingClientRect().top;
+  const mediaBottom=media.getBoundingClientRect().bottom;
+  card.style.maxHeight=Math.max(220,Math.round(mediaBottom-top))+'px';
+}
+function renderReport(j){
+  const body=document.getElementById('reportbody'); if(!body)return;
+  if(j.generating){body.innerHTML='<p class="rmuted">Generating report\u2026</p>';return;}
+  if(j.have_key===false){body.innerHTML='<p class="rmuted">No API key on the controller. Add a <code>.anthropic_key</code> file (or set ANTHROPIC_API_KEY) to enable AI reports.</p>';return;}
+  if(j.ok===null||j.ok===undefined){body.innerHTML='<p class="rmuted">No report yet. Generate one, or enable the daily report.</p>';return;}
+  if(j.ok===false){body.innerHTML=`<p class="rmuted">Last attempt failed: ${esc(j.error||'unknown error')}</p>`;return;}
+  const r=j.report||{};
+  let h=`<div class="rhead">${rBadge(r.overall_health)}<span class="rtime">${rAgo(j.ts)}${j.model?' \u00b7 '+esc(j.model):''}</span></div>`;
+  if(r.summary)h+=`<p class="rsummary">${esc(r.summary)}</p>`;
+  const f=[];
+  if(r.germination&&r.germination.sprouted!=null&&r.germination.total_cells!=null)
+    f.push(`Germinated ${r.germination.sprouted}/${r.germination.total_cells}`);
+  if(r.growth_stage)f.push('Stage: '+esc(r.growth_stage));
+  if(r.light&&r.light.assessment)f.push('Light: '+esc(r.light.assessment));
+  if(r.water&&r.water.assessment)f.push('Water: '+esc(r.water.assessment));
+  if(f.length)h+=`<p class="rfacts">${f.join(' \u00b7 ')}</p>`;
+  if(r.light&&r.light.reason)h+=`<p class="rreason"><b>Light:</b> ${esc(r.light.reason)}</p>`;
+  if(r.water&&r.water.reason)h+=`<p class="rreason"><b>Water:</b> ${esc(r.water.reason)}</p>`;
+  h+=rList('Concerns',r.concerns);
+  h+=rList('Recommendations',r.recommendations);
+  if(r.per_cell&&r.per_cell.length)
+    h+=`<div class="rsec"><h4>Cell notes</h4><ul>${r.per_cell.map(c=>`<li><b>${esc(c.cell||'')}</b> ${esc(c.note||'')}</li>`).join('')}</ul></div>`;
+  if(r.species&&r.species.length)
+    h+=`<div class="rsec"><h4>Species guesses</h4><ul>${r.species.map(s=>`<li><b>${esc(s.cell||'')}</b> ${esc(s.guess||'unsure')}${s.confidence?` <span class="rconf">(${esc(s.confidence)})</span>`:''}${s.why?` &mdash; ${esc(s.why)}`:''}</li>`).join('')}</ul></div>`;
+  if(r.confidence)h+=`<p class="rconf">Confidence: ${esc(r.confidence)}${j.parse_error?' \u00b7 (reply was not structured JSON)':''}</p>`;
+  body.innerHTML=h;
+}
+let lastReportSig=null;
+async function fetchReport(){
+  try{
+    const r=await fetch('/api/report');
+    const j=await r.json();
+    const sig=`${j.ts}|${j.generating}|${j.ok}|${j.have_key}`;
+    if(sig!==lastReportSig){           // only re-render when something changed
+      lastReportSig=sig;
+      renderReport(j);
+      requestAnimationFrame(fitReportHeight);
+    }
+    if(j.generating)setTimeout(fetchReport,4000);   // poll faster until it lands
+  }catch(e){}
+}
+async function genReport(){
+  const info=document.getElementById('reportinfo');if(info)info.textContent='working\u2026';
+  document.getElementById('reportbody').innerHTML='<p class="rmuted">Generating report\u2026 this takes ~20s.</p>';
+  try{
+    const r=await fetch('/api/report',{method:'POST'});
+    const j=await r.json();
+    if(info)info.textContent='';
+    if(j.ok){renderReport({...j,have_key:true});lastReportSig=`${j.ts}|${j.generating}|${j.ok}|true`;}
+    else renderReport({ok:false,error:j.error||('HTTP '+r.status)});
+    requestAnimationFrame(fitReportHeight);
+  }catch(e){
+    if(info)info.textContent='';
+    document.getElementById('reportbody').innerHTML='<p class="rmuted">Request timed out, but it may still be generating. Reload in a moment to see it.</p>';
+  }
+}
+function setAiControls(s){
+  if(!s)return;
+  const en=document.getElementById('aienabled'),t=document.getElementById('aitime');
+  if(en&&document.activeElement!==en)en.checked=!!s.ai_enabled;
+  if(t&&document.activeElement!==t&&s.ai_report_hour!=null){
+    const h=String(s.ai_report_hour).padStart(2,'0');
+    const m=String(s.ai_report_minute||0).padStart(2,'0');
+    t.value=`${h}:${m}`;
+  }
+}
+async function saveAi(){
+  const en=document.getElementById('aienabled'),t=document.getElementById('aitime');
+  const parts=(t.value||'08:00').split(':');
+  const h=Math.min(23,Math.max(0,parseInt(parts[0],10)||0));
+  const m=Math.min(59,Math.max(0,parseInt(parts[1],10)||0));
+  try{await fetch('/api/ai_settings',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({ai_enabled:en.checked,ai_report_hour:h,ai_report_minute:m})});}catch(e){}
+}
+function initReport(){
+  const gb=document.getElementById('genreport');if(gb)gb.addEventListener('click',genReport);
+  const en=document.getElementById('aienabled');if(en)en.addEventListener('change',saveAi);
+  const t=document.getElementById('aitime');if(t)t.addEventListener('change',saveAi);
+  window.addEventListener('resize',fitReportHeight);
+  if('ResizeObserver' in window){
+    const m=document.querySelector('.amedia');
+    if(m)new ResizeObserver(()=>fitReportHeight()).observe(m);
+  }
+  fetchReport();
+}
+
 setInterval(refresh,15000);
 setInterval(render,60000);
-[initAuth, initSensors, initGridSvg].forEach(fn=>{
+setInterval(pollFloat,1500);
+[initAuth, initSensors, initGridSvg, initReport].forEach(fn=>{
   try{ fn(); }catch(e){ console.error(fn.name+' init failed:', e); }
 });
 refresh();

@@ -9,11 +9,10 @@ readings. Nothing here knows about brightness, schedules, or the web app.
     # -> {"moisture:B2": 43.1, "temp:air": 22.4, "humidity": 58.0,
     #     "lux": 1840.0, "temp:soil_1": 21.7, ...}   (None values dropped)
 
-Stub mode: until the real devices are wired (and their libraries installed),
-read_all() returns plausible fake values so the whole pipeline -- sample loop,
-SQLite logging, dashboard charts -- can be built and tested with no hardware.
-As each sensor type is wired, fill in its _read_* function and flip its entry
-in ENABLED. Build one type at a time and verify before moving on.
+read_all() returns only sensors that are actually wired and enabled; anything
+not yet wired is simply absent (the dashboard shows "-" for it). As each sensor
+type is wired, fill in its _read_* function and flip its entry in ENABLED.
+Build one type at a time and verify before moving on.
 
 Hardware plan (all on the Pi's I2C bus, pins 3=SDA / 5=SCL, plus 1-Wire on
 GPIO4 / pin 7):
@@ -23,7 +22,6 @@ GPIO4 / pin 7):
   - 5x DS18B20 soil temp          -> 1-Wire, /sys/bus/w1/devices/28-*
 """
 
-import random
 
 # Flip these to True as each sensor type is wired and its _read_* filled in.
 ENABLED = {
@@ -145,39 +143,23 @@ def _read_soil_temps():
     return {}
 
 
-# --------------------------------- stubs ----------------------------------
-
-def _stub():
-    """Plausible fake values so the pipeline works before any wiring."""
-    out = {}
-    for cell in (MOISTURE_MAP or {"A1": 0, "B2": 0, "C3": 0, "D4": 0}):
-        out[f"moisture:{cell}"] = round(random.uniform(35, 55), 1)
-    out["temp:air"] = round(random.uniform(20, 25), 2)
-    out["humidity"] = round(random.uniform(45, 65), 1)
-    out["lux"] = round(random.uniform(0, 12000), 0)
-    for i in range(1, 4):
-        out[f"temp:soil_{i}"] = round(random.uniform(19, 24), 2)
-    return out
-
-
-def stub_mode():
-    """True when no sensor type is enabled (i.e. nothing is wired yet)."""
-    return not any(ENABLED.values())
+# ------------------------------------------------------------------------- #
+# Each sensor type returns {} until its _read_* is filled in and its ENABLED
+# entry flipped True. Camera-based dryness (growth.py) and the float switch are
+# the live sources today; the I2C/1-Wire sensors above are wiring-pending.
+# ------------------------------------------------------------------------- #
 
 
 # --------------------------------- public ---------------------------------
 
 def read_all():
-    """Return {sensor_key: value}. Each sensor type is read independently and
-    wrapped so one failed device never aborts the rest; failures are dropped.
-    The float switch is read whether or not the I2C sensors are wired."""
+    """Return {sensor_key: value} for wired sensors only. Each type is read
+    independently and wrapped so one failed device never aborts the rest;
+    failures and not-yet-wired types are simply absent from the result."""
     out = {}
     fv = read_float()
     if fv is not None:
         out["float:tray"] = fv
-    if stub_mode():
-        out.update(_stub())
-        return out
     for fn in (_read_moisture, _read_air, _read_lux, _read_soil_temps):
         try:
             out.update(fn())
@@ -187,6 +169,5 @@ def read_all():
 
 
 if __name__ == "__main__":
-    print("stub_mode:", stub_mode())
     for k, v in sorted(read_all().items()):
         print(f"  {k:18s} {v}")

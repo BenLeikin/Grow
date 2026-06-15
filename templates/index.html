@@ -53,6 +53,17 @@
   <dl class="grid" id="facts"></dl>
 </div>
 
+<div class="card areport" id="reportcard">
+  <h2>&#129516; Garden report</h2>
+  <div class="reportctl editonly" id="reportctl" style="display:none">
+    <button type="button" id="genreport">Generate now</button>
+    <label class="aitog"><input type="checkbox" id="aienabled"> Daily report</label>
+    <label class="aihrwrap">at <input type="time" id="aitime" aria-label="Daily report time"></label>
+    <span id="reportinfo"></span>
+  </div>
+  <div id="reportbody"><p class="rmuted">No report yet.</p></div>
+</div>
+
 </div>
 
 <div class="amedia">
@@ -66,9 +77,12 @@
   <div id="photoinfo"></div>
   <div class="gridctl editonly">
     <label><input type="checkbox" id="gridshow"> Show cell grid</label>
-    <button type="button" id="detectbtn">&#128269; Detect</button>
-    <span>Rows <input type="number" id="gridrows" min="1" max="12"></span>
-    <span>Cols <input type="number" id="gridcols" min="1" max="12"></span>
+    <button type="button" id="gridlock">&#128274; Lock grid</button>
+    <span class="gridedit">
+      <button type="button" id="detectbtn">&#128269; Detect</button>
+      <span>Rows <input type="number" id="gridrows" min="1" max="12"></span>
+      <span>Cols <input type="number" id="gridcols" min="1" max="12"></span>
+    </span>
     <span id="gridinfo"></span>
   </div>
 </div>
@@ -95,17 +109,21 @@
 
 <div class="card asensors" id="sensorcard" style="display:none">
   <h2>&#128202; Sensors</h2>
-  <div id="stubbanner" class="banner" style="display:none">
-    Demo data &mdash; no sensors wired yet. These values are simulated.
-  </div>
   <div class="sreadout" id="sreadout"></div>
   <div class="waterctl editonly" id="waterctl" style="display:none">
     <span class="schip">Float <b id="floatstate">--</b></span>
     <span class="schip">Pump today <b id="pumptoday">0</b><span class="u">s</span></span>
+    <button type="button" id="fillbtn">Fill to float</button>
     <button type="button" id="pumpbtn">Test pump</button>
     <input type="number" id="pumpsecs" value="3" min="1" max="20" aria-label="Pump seconds">
     <span class="u">s</span>
     <span id="pumpinfo"></span>
+  </div>
+  <div class="drycal editonly" id="drycal" style="display:none">
+    <span class="schip">Camera moisture</span>
+    <button type="button" id="calwet">Set wet 100%</button>
+    <button type="button" id="caldry">Set dry 0%</button>
+    <span id="calinfo"></span>
   </div>
   <div class="chartctl">
     <select id="chartsensor" aria-label="Sensor to chart"></select>
@@ -118,6 +136,7 @@
   </div>
   <svg id="histchart" viewBox="0 0 720 240" preserveAspectRatio="none"
        role="img" aria-label="Sensor history"></svg>
+  <div id="charttip"></div>
 </div>
 
 <details class="card aset editonly">

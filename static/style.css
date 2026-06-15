@@ -34,6 +34,22 @@
   .face circle{fill:#2b2b2b}
   .face path{stroke:#e0915a}
   .raygroup{fill:#fbe7a1;opacity:calc(.4 + var(--glow,0)*.6);transition:opacity .8s}
+  /* per-stage graphics (night moon, sunrise, sunset) */
+  .moonsvg,.risesvg,.setsvg{width:100%;height:100%;display:block;overflow:visible}
+  .sun.is-night{opacity:.92;transform:scale(1);
+    filter:drop-shadow(0 0 5px rgba(210,220,180,.45))}
+  .moondark{fill:#5b5f49}
+  .moonlit{fill:#ecd9a0}
+  .star{fill:var(--sun)}
+  .redisk{fill:#f4c44e}
+  .sedisk{fill:#ea8d5b}
+  .rays line{stroke-width:3;stroke-linecap:round}
+  .rerays line{stroke:#f6cf78}
+  .serays line{stroke:#eaa06a}
+  .reface circle,.seface circle{fill:#2b2b2b}
+  .reface path{stroke:#e0915a}
+  .seface path{stroke:#b5663b}
+  .horizon{stroke:#c2a978;stroke-width:3;stroke-linecap:round}
   .phase b{font-size:20px;display:block}
   .phase span{color:var(--leaf);font-size:14px}
   .pct{margin-left:auto;text-align:right}
@@ -107,6 +123,12 @@
     .amedia{grid-area:media;display:flex;flex-direction:column;gap:14px;align-self:start}
     .asensors{grid-area:sens}
     .aset{grid-area:set}
+    /* report card fills to the media column's bottom; body scrolls for overflow */
+    #reportcard{display:flex;flex-direction:column;overflow:hidden}
+    #reportcard>h2,#reportcard>.reportctl{flex:0 0 auto}
+    #reportbody{flex:1 1 auto;min-height:0;overflow-y:auto;padding-right:6px}
+    #reportbody::-webkit-scrollbar{width:8px}
+    #reportbody::-webkit-scrollbar-thumb{background:var(--line);border-radius:8px}
     #photo,#vframe{max-height:64vh;object-fit:contain}
   }
 
@@ -147,6 +169,29 @@
 .robadge{background:#e9eef3;color:#5a6b7a;border:1px solid #c9d4dd;border-radius:8px;
   padding:3px 9px;font-size:12px}
 #loginerr{color:#b23b3b;font-size:12px}
+/* AI garden report */
+.reportctl{display:flex;align-items:center;flex-wrap:wrap;gap:14px;margin-bottom:14px}
+.reportctl button{margin-top:0}
+.reportctl label{display:inline-flex;align-items:center;gap:6px;margin:0;white-space:nowrap}
+.aihrwrap input{width:auto;margin-top:0;padding:7px 9px}
+#reportinfo{font-size:13px;color:var(--leaf)}
+#reportbody p{margin:0 0 8px}
+.rhead{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.rbadge{font-size:12px;font-weight:700;padding:3px 11px;border-radius:999px;letter-spacing:.02em}
+.rbg-good{background:#e3f0d8;color:#2f6b34}
+.rbg-watch{background:#fbeccb;color:#9a6b1e}
+.rbg-problem{background:#f6dcd0;color:#b1492c}
+.rtime{font-size:12px;color:var(--leaf)}
+.rsummary{font-size:16px;color:var(--fir);line-height:1.45}
+.rfacts{font-size:13px;color:var(--leaf)}
+.rreason{font-size:13.5px;color:var(--fir)}
+.rsec{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
+.rsec h4{font-family:Georgia,serif;font-size:14px;font-weight:600;color:var(--fir);margin-bottom:5px}
+.rsec ul{margin:0;padding-left:18px}
+.rsec li{font-size:13.5px;color:var(--fir);margin-bottom:3px;line-height:1.4}
+.rmuted{font-size:13.5px;color:var(--leaf)}
+.rmuted code{background:#eef4e6;padding:1px 5px;border-radius:5px;font-size:12.5px}
+.rconf{font-size:12px;color:var(--leaf);margin-top:10px}
 body.readonly .editonly{display:none !important}
 
 /* ---- gentle plant animations (subtle by design) ---- */
@@ -174,3 +219,10 @@ body.gridlocked .gridedit{display:none}
 /* per-cell canopy growth label on the snapshot overlay */
 .ggrow{fill:#2e7d32;font:700 17px sans-serif;paint-order:stroke;
   stroke:#eafff0;stroke-width:3px}
+.gdry{fill:#8d6e63;font:700 16px sans-serif;paint-order:stroke;
+  stroke:#eafff0;stroke-width:3px}
+.drycal{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px}
+.drycal #calinfo{color:#7a8a72;font-size:.9em}
+#charttip{position:fixed;display:none;pointer-events:none;z-index:50;
+  background:#2f4030;color:#eafff0;font-size:12px;padding:4px 8px;border-radius:6px;
+  white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.25)}

@@ -6,3 +6,7 @@ growlight.db-wal
 growlight.db-shm
 __pycache__/
 *.pyc
+.secret
+.anthropic_key
+ai_report.json
+.discord_webhook

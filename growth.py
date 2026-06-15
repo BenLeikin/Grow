@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Per-cell canopy growth measurement from a tray photo.
 
-For each grid cell, measures canopy coverage (share of green/plant pixels, the
-primary metric) and the raw green pixel count, using HSV thresholding. Run as
-a subprocess so OpenCV's memory is released after each call, the same pattern
-as detect_corners.py.
+For each grid cell, measures canopy coverage (share of plant pixels, the
+primary metric) and the raw plant-pixel count, using the excess-green index.
+Run as a subprocess so OpenCV's memory is released after each call, the same
+pattern as detect_corners.py.
 
 Usage:  growth.py <image.jpg> '<grid-json>'
   grid-json: {"corners": [[x,y] x4 as TL,TR,BR,BL fractions], "rows": R, "cols": C}
@@ -17,10 +17,14 @@ width so they stay comparable across photos even if the capture size changes.
 import json
 import sys
 
-# HSV green thresholds (OpenCV hue is 0-179). Widen/narrow if soil, algae, or
-# yellowing leaves trip the detector.
-H_LO, H_HI = 35, 85
-S_MIN, V_MIN = 40, 40
+# Plant detection uses the excess-green index (ExG = 2G - R - B), not hue.
+# The magenta grow light makes leaves read as magenta, so hue-based detection
+# zeros out real plants; ExG measures *relative* greenness and survives coloured
+# light. Soil sits deeply negative, so a modest positive threshold rejects it
+# cleanly. Raise EXG_MIN if soil/perlite trips it, lower it to catch fainter
+# leaves. (Absolute coverage is understated under magenta light; for true
+# coverage, capture under white light. Good for tracking and ranking either way.)
+EXG_MIN = 15
 ANALYSIS_W = 1000   # longest image side scaled to this before counting
 
 
@@ -64,10 +68,17 @@ def analyze(path, grid):
         img = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))))
         h, w = img.shape[:2]
 
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    lo = np.array([H_LO, S_MIN, V_MIN], dtype=np.uint8)
-    hi = np.array([H_HI, 255, 255], dtype=np.uint8)
-    green = cv2.inRange(hsv, lo, hi)   # 0/255 mask of plant pixels
+    # plant mask via excess-green index (robust to the magenta grow light)
+    b, g, r = (img[:, :, 0].astype(np.int32), img[:, :, 1].astype(np.int32),
+               img[:, :, 2].astype(np.int32))
+    exg = 2 * g - r - b
+    green = (exg > EXG_MIN).astype(np.uint8) * 255   # 0/255 plant mask
+
+    # Grayscale brightness is the wet/dry signal: wetter soil is darker. Use
+    # brightness (not colour) because the magenta grow light wrecks hue. This is
+    # only comparable across photos if capture brightness stays fixed.
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    SPECULAR = 240   # drop near-white glints off wet plastic / water
 
     try:
         C = grid["corners"]
@@ -94,6 +105,13 @@ def analyze(path, grid):
             k = cell_key(r, c)
             readings["growth:" + k] = round(100.0 * green_px / cell_area, 1)
             readings["growth_px:" + k] = green_px
+
+            # soil = in-cell, not plant, not specular highlight
+            soil = (mask > 0) & (green == 0) & (gray < SPECULAR)
+            if int(np.count_nonzero(soil)) >= 50:
+                # median brightness (0-255) -> 0-100 surface index; higher = drier
+                dry = float(np.median(gray[soil]))
+                readings["dry:" + k] = round(100.0 * dry / 255.0, 1)
     return {"ok": True, "readings": readings}
 
 
